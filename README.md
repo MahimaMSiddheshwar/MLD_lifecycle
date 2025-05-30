@@ -1,19 +1,61 @@
-````markdown
+# 🛰️ MLDLC – End-to-End Machine-Learning Project Template
+
+This repository is a **ready-made workflow skeleton** for any ML project, small
+or large.  
+It captures the full _Machine-Learning Development Life-Cycle_ (MLDLC) in
+clearly separated phases—so every new problem you tackle starts with the same,
+battle-tested structure instead of an empty folder.
+
+### Why use this repo?
+
+- **Consistent anatomy** – one place for data, code, reports, and models
+- **Phase gates** – checklists ensure you don’t jump ahead with fuzzy scope
+- **Security & governance hooks** – PII masking, lineage, and basic compliance
+- **Extensible** – each phase ships with a runnable Python stub you can swap or extend
+- **Tool-agnostic** – works for tabular, NLP, vision, or time-series; local or cloud
+
+### High-level flow
+
+```
+
+Problem Definition  →  Data Collection  →  Preparation  →  EDA  →  Feature Eng
+↓                                                           ↑
+Success checklist                                   Continuous feedback
+↓                                                           ↑
+Model Design & Train  →  Eval & Hardening  →  Deploy  →  Monitor & Retrain
+
+```
+
+Clone it, tick off the Phase-1 checklist to lock your problem statement, then
+progress through the folders and scripts in order.
+
 ## 0 — Repo Scaffold<a name="0-repo-scaffold"></a>
 
 ```text
 .
-├── data/            # raw/, interim/, processed/ partitions
-├── src/             # Python packages (pip-installable)
-├── notebooks/       # Exploratory Jupyter work
-├── reports/         # Auto-generated EDA, drift, model cards
-├── models/          # MLflow or on-disk model artefacts
-├── docker/          # Dockerfile & container helpers
-├── dvc.yaml         # Data-Version-Control pipeline
-├── .github/         # CI/CD workflows
-└── README.md        # ← this file
+├── data/                         # raw/, interim/, processed/
+├── src/
+│   ├── Data Ingestion/
+│   │   └── omni_collector.py     # Phase-2 engine  (⇨ see link below)
+│   ├── Data Cleaning/
+│   │   ├── data_preparation.py   # Prep pipeline  (Phase-3)
+│   │   └── data_wrangling_cleaning.py
+│   ├── Data Analysis/
+│   │   ├── EDA.py                # Basic EDA      (Phase-4)
+│   │   └── EDA_advance.py        # Advanced EDA   (Phase-4 extra)
+│   └── Feature Engineering/
+│       └── feature_engineering.py
+├── notebooks/                    # Optional ad-hoc ipynb
+├── reports/                      # Auto EDA, drift, model cards
+├── models/                       # MLflow or on-disk artefacts
+├── docker/                       # Dockerfile & helpers
+├── dvc.yaml                      # DVC pipeline
+├── pyproject.toml                # editable-install metadata
+├── .github/                      # CI/CD workflows
+└── README.md                     # ← you’re reading it
 ```
-````
+
+---
 
 ## 🗂️ Table of Contents — _granular & exhaustive_
 
@@ -21,74 +63,75 @@
 
 1. [Phase 1 — Problem Definition](#1-phase-1--problem-definition)
 
-2. [Phase 2 — **Data Collection**](src/data_ingest/omni_collector.py)  
-   • [2A Flat-Files & Object Storage](#2a-flat-files--object-storage)  
-   • [2B Relational Databases](#2b-relational-databases)  
-   • [2C NoSQL & Analytical Stores](#2c-nosql--analytical-stores)  
-   • [2D APIs & Web Scraping](#2d-apis--web-scraping)  
-   • [2E Streaming & Message Queues](#2e-streaming--message-queues)  
-   • [2F SaaS & Cloud-Native Connectors](#2f-saas--cloud-native-connectors)  
-   • [2G Sensors & IoT](#2g-sensors--iot)  
-   • [2H Data Privacy & Governance Hooks](#2h-data-privacy--governance-hooks)  
+2. [Phase 2 — **Data Collection**](src/Data%20Ingestion/omni_collector.py)
+   • [2A Flat-Files & Object Storage](#2a-flat-files--object-storage)
+   • [2B Relational Databases](#2b-relational-databases)
+   • [2C NoSQL & Analytical Stores](#2c-nosql--analytical-stores)
+   • [2D APIs & Web Scraping](#2d-apis--web-scraping)
+   • [2E Streaming & Message Queues](#2e-streaming--message-queues)
+   • [2F SaaS & Cloud-Native Connectors](#2f-saas--cloud-native-connectors)
+   • [2G Sensors & IoT](#2g-sensors--iot)
+   • [2H Data Privacy & Governance Hooks](#2h-data-privacy--governance-hooks)
    • [2I Logging, Auditing & Checksums](#2i-logging-auditing--checksums)
 
-3. [Phase 3 — **Data Preparation**](#3-phase-3--data-preparation)  
-   • [3A Schema Validation & Data Types](#3a-schema-validation--data-types)  
-   • [3B Missing-Value Strategy](#3b-missing-value-strategy)  
-   • [3C Outlier Detection & Treatment](#3c-outlier-detection--treatment)  
-   • [3D Data Transformation & Scaling](#3d-data-transformation--scaling)  
-   • [3E Class / Target Balancing](#3e-class-target-balancing)  
+3. [Phase 3 — **Data Preparation**](src/Data%20Cleaning/data_preparation.py)
+   • [3A Schema Validation & Data Types](#3a-schema-validation--data-types)
+   • [3B Missing-Value Strategy](#3b-missing-value-strategy)
+   • [3C Outlier Detection & Treatment](#3c-outlier-detection--treatment)
+   • [3D Data Transformation & Scaling](#3d-data-transformation--scaling)
+   • [3E Class / Target Balancing](#3e-class-target-balancing)
    • [3F Data Versioning & Lineage](#3f-data-versioning--lineage)
 
-4. [Phase 4 — **Exploratory Data Analysis (EDA)**](#4-phase-4--exploratory-data-analysis)  
-   • [4A Univariate Statistics & Plots](#4a-univariate-statistics--plots)  
-   • [4B Bivariate Tests & Visuals](#4b-bivariate-tests--visuals)  
+4. [Phase 4 — **Exploratory Data Analysis (EDA)**](src/Data%20Analysis/EDA.py)
+   • [4A Univariate Statistics & Plots](#4a-univariate-statistics--plots)
+   • [4B Bivariate Tests & Visuals](#4b-bivariate-tests--visuals)
    • [4C Multivariate Tests & Diagnostics](#4c-multivariate-tests--diagnostics)
+   • [4D Advanced EDA (MI · Cramer-V · Embeddings · TS Decomp)](src/Data%20Analysis/EDA_advance.py)
 
-5. [Phase 5 — Feature Engineering](#5-phase-5--feature-engineering)  
-   • [5A Scaling & Normalization](#5a-scaling--normalization)  
-   • [5B Encoding Categorical Variables](#5b-encoding-categorical-variables)  
-   • [5C Handling Imbalanced Data](#5c-handling-imbalanced-data)  
-   • [5D Dimensionality Reduction](#5d-dimensionality-reduction)  
-   • [5E Automated Feature Synthesis](#5e-automated-feature-synthesis)  
-   • [5F Text / NLP Feature Extraction](#5f-text--nlp-feature-extraction)  
-   • [5G Image Feature Extraction](#5g-image-feature-extraction)  
+5. [Phase 5 — Feature Engineering](src/Feature%20Engineering/feature_engineering.py)
+   • [5A Scaling & Normalization](#5a-scaling--normalization)
+   • [5B Encoding Categorical Variables](#5b-encoding-categorical-variables)
+   • [5C Handling Imbalanced Data](#5c-handling-imbalanced-data)
+   • [5D Dimensionality Reduction](#5d-dimensionality-reduction)
+   • [5E Automated Feature Synthesis](#5e-automated-feature-synthesis)
+   • [5F Text / NLP Feature Extraction](#5f-text--nlp-feature-extraction)
+   • [5G Image Feature Extraction](#5g-image-feature-extraction)
    • [5H Time-Series Feature Engineering](#5h-time-series-feature-engineering)
 
-6. [Phase 6 — Model Design & Training](#6-phase-6--model-design--training)  
-   • [6A Algorithm Selection](#6a-algorithm-selection)  
-   • [6B Regularisation Techniques](#6b-regularisation-techniques)  
-   • [6C Cross-Validation Variants](#6c-cross-validation-variants)  
-   • [6D Hyper-Parameter Optimisation](#6d-hyper-parameter-optimisation)  
-   • [6E Early-Stopping & LR Scheduling](#6e-early-stopping--lr-scheduling)  
-   • [6F Ensembling & Bagging / Stacking](#6f-ensembling--bagging--stacking)  
+6. [Phase 6 — Model Design & Training](#6-phase-6--model-design--training)
+   • [6A Algorithm Selection](#6a-algorithm-selection)
+   • [6B Regularisation Techniques](#6b-regularisation-techniques)
+   • [6C Cross-Validation Variants](#6c-cross-validation-variants)
+   • [6D Hyper-Parameter Optimisation](#6d-hyper-parameter-optimisation)
+   • [6E Early-Stopping & LR Scheduling](#6e-early-stopping--lr-scheduling)
+   • [6F Ensembling & Bagging / Stacking](#6f-ensembling--bagging--stacking)
    • [6G Data Augmentation & Noise Injection](#6g-data-augmentation)
 
-7. [Phase 7 — **Evaluation, Regularisation Audit & Hardening**](#7-phase-7--evaluation-regularisation--hardening)  
-   • [7A Core Metrics (Accuracy · Precision · Recall · F1 · AUC)](#7a-core-metrics)  
-   • [7B Calibration & Probabilistic Quality](#7b-calibration--probability-quality)  
-   • [7C Bias / Fairness & Group Metrics](#7c-bias--fairness)  
-   • [7D Explainability (SHAP / LIME / XAI)](#7d-explainability)  
-   • [7E Robustness & Adversarial Testing](#7e-robustness--adversarial-testing)  
-   • [7F Over-fitting Diagnostics (Learning & Validation Curves)](#7f-over-fitting-diagnostics)  
+7. [Phase 7 — **Evaluation, Regularisation Audit & Hardening**](#7-phase-7--evaluation-regularisation--hardening)
+   • [7A Core Metrics](#7a-core-metrics)
+   • [7B Calibration & Probabilistic Quality](#7b-calibration--probability-quality)
+   • [7C Bias / Fairness & Group Metrics](#7c-bias--fairness)
+   • [7D Explainability (SHAP · LIME · XAI)](#7d-explainability)
+   • [7E Robustness & Adversarial Testing](#7e-robustness--adversarial-testing)
+   • [7F Over-fitting Diagnostics](#7f-over-fitting-diagnostics)
    • [7G Model Card & Governance Sign-off](#7g-model-card--governance)
 
-8. [Phase 8 — **Deployment & Serving**](#8-phase-8--deployment--serving)  
-   • [8A Model Serialization (Pickle · ONNX · TorchScript)](#8a-model-serialization)  
-   • [8B Packaging & Containerization (Docker / OCI)](#8b-packaging--containerization)  
-   • [8C API & Micro-service Layer (FastAPI / gRPC)](#8c-api--micro-service-layer)  
-   • [8D Inference Optimisation (Batching · Vectorised · GPU / Triton)](#8d-inference-optimisation)  
-   • [8E CI/CD & Model Registry Promotion](#8e-cicd--model-registry-promotion)  
-   • [8F Release Strategies (Canary · Shadow · Blue-Green)](#8f-release-strategies)  
-   • [8G Runtime Security (mTLS · AuthZ · PodSecurity)](#8g-runtime-security)
+8. [Phase 8 — **Deployment & Serving**](#8-phase-8--deployment--serving)
+   • [8A Model Serialization](#8a-model-serialization)
+   • [8B Packaging & Containerization](#8b-packaging--containerization)
+   • [8C API & Micro-service Layer](#8c-api--micro-service-layer)
+   • [8D Inference Optimisation](#8d-inference-optimisation)
+   • [8E CI/CD & Model-Registry Promotion](#8e-cicd--model-registry-promotion)
+   • [8F Release Strategies](#8f-release-strategies)
+   • [8G Runtime Security](#8g-runtime-security)
 
-9. [Phase 9 — **Monitoring, Drift & Retraining**](#9-phase-9--monitoring-drift--retraining)  
-   • [9A Performance & Latency Metrics](#9a-performance--latency-metrics)  
-   • [9B Data & Concept Drift Detection](#9b-data--concept-drift-detection)  
-   • [9C Model Quality Tracking & Alerts](#9c-model-quality-tracking--alerts)  
-   • [9D Logging & Audit Trails (PII-safe)](#9d-logging--audit-trails)  
-   • [9E Automated Retraining Pipelines](#9e-automated-retraining-pipelines)  
-   • [9F Rollback / Roll-forward Playbooks](#9f-rollback--roll-forward-playbooks)  
+9. [Phase 9 — **Monitoring, Drift & Retraining**](#9-phase-9--monitoring-drift--retraining)
+   • [9A Performance & Latency Metrics](#9a-performance--latency-metrics)
+   • [9B Data & Concept Drift Detection](#9b-data--concept-drift-detection)
+   • [9C Model Quality Tracking & Alerts](#9c-model-quality-tracking--alerts)
+   • [9D Logging & Audit Trails](#9d-logging--audit-trails)
+   • [9E Automated Retraining Pipelines](#9e-automated-retraining-pipelines)
+   • [9F Rollback / Roll-forward Playbooks](#9f-rollback--roll-forward-playbooks)
    • [9G Continuous Compliance & Model Registry](#9g-continuous-compliance--model-registry)
 
 10. [Cloud-Security Pillars](#10-cloud-security-pillars)
@@ -99,10 +142,88 @@
 
 13. [License](#13-license)
 
+## 1 — Phase 1 · Problem Definition<a name="1-phase-1--problem-definition"></a>
+
+> **Goal** — define the problem, scope, and data requirements.
+
+## 🧭 How I Break Down Any ML Problem (10-Year MLE Playbook)
+
+> A condensed checklist I’ve evolved after dozens of production projects  
+> — use it to turn a fuzzy idea into an implementable, testable ML plan.
+
+---
+
+### 1 Clarify the Business “Why”
+
+| Ask                                                 | Why it matters                                         |
+| --------------------------------------------------- | ------------------------------------------------------ |
+| _“If the model is perfect tomorrow, what changes?”_ | forces ROI thinking, surfaces hidden KPIs              |
+| _“Who loses sleep if this fails?”_                  | reveals actual decision-makers / veto-holders          |
+| _“What is the cost of a wrong prediction?”_         | calibrates class-imbalance weighting, thresholds, SLAs |
+
+---
+
+### 2 Translate to an ML Task
+
+1. **Prediction vs. ranking vs. clustering?**  
+   Map to _supervised_, _recommender_, _unsupervised_ or _forecasting_ bucket.
+2. **Unit of prediction** (row-level? session? account? pixel?).  
+   Mis-scoping here kills performance later.
+3. **Latency tolerance** → batch, near-real-time, or streaming.
+
+> _Tip_: if you can’t phrase the target as a column in a future CSV,  
+> you don’t have a learnable task yet.
+
+---
+
+### 3 Do a Data Reality Check _before_ Deep EDA
+
+- Column availability at **prediction time** (no future leakage).
+- Volume vs. freshness vs. drift risk.
+- Quick uni-variate histograms → smell test for PII, bogus zeros, unit errors.
+- **Baselines**: random, constant, or simple ruleset.  
+  If a baseline already beats the target KPI, challenge the need for ML.
+
+---
+
+### 4 Sketch the End-to-End Flow on One Whiteboard
+
+```mermaid
+flowchart LR
+    subgraph Offline
+        A[Raw Sources] --> B[Data Prep<br>+ EDA] --> C[Train / Tune]
+    end
+    subgraph Online
+        C --> D(Model Artifact) --> E[API / Batch Job]
+    end
+    E -->|logs| F[Monitoring & Drift]
+    F -->|trigger| B
+```
+
+### 5 ✅ Problem-Clarity **Exit Checklist**
+
+_(all boxes must be ticked before Phase 2 – Data Collection – may start)_
+
+| ⬜  | Requirement                                               | Hint                                                    |
+| --- | --------------------------------------------------------- | ------------------------------------------------------- |
+|     | **Business objective** phrased as one SMART sentence      | “Reduce voluntary churn by 15 % within 2 quarters”      |
+|     | **Unit of analysis** defined                              | “prediction per _customer-ID_ per month”                |
+|     | **Target variable** unambiguously stated and time-stamped | `is_churn` ∈ {0, 1} measured 30 days after billing date |
+|     | **Primary success metric** and numeric threshold agreed   | “F1 ≥ 0.82 on 2024-Q4 hold-out”                         |
+|     | **Constraints & assumptions** captured                    | latency, region, budget, feature freeze date            |
+|     | **High-level ethical / bias risks** listed                | sensitive attributes, potential exclusion harms         |
+|     | **Regulatory touch-points** identified                    | GDPR/CCPA, sector-specific rules                        |
+|     | **Baseline approach** written down                        | random or simple heuristic score                        |
+|     | All above items reviewed & signed off (email / doc)       | attach link in project tracker                          |
+
+> When the table is fully checked, create an issue titled  
+> **“Phase-1 Complete – proceed to Data Collection”** and assign it to the team lead.  
+> Only then move on to Phase-2.
+
 ## 2 — Phase 2 · Data Collection<a name="2-phase-2--data-collection"></a>
 
 > **Goal** — pull data from _any_ source, stamp it with lineage, mask PII, and
-> persist an immutable snapshot in `data/raw/` that DVC (or LakeFS) can track.  
+> persist an immutable snapshot in `data/raw/` that DVC (or LakeFS) can track.
 > The heavy lifting is baked into **[`OmniCollector`](src/data_ingest/omni_collector.py)**;
 > the subsections below show how each channel maps to one collector method,
 > plus security/gov-hooks you should enable in production.
@@ -264,8 +385,8 @@ same `OmniCollector` methods shown above.
 
 > **Goal** — turn a raw snapshot from Phase-2 into a _model-ready_, versioned,
 > privacy-hardened dataset in `data/processed/`, plus an interim copy in
-> `data/interim/`.  
-> All logic lives in  
+> `data/interim/`.
+> All logic lives in
 > **[`src/ml_pipeline/prepare.py`](src/ml_pipeline/prepare.py)** —
 > a configurable pipeline class (**`DataPreparer`**).
 
@@ -285,7 +406,7 @@ breaks on dtype surprises.
 
 ### 3B Missing-Value Strategy<a name="3b-missing-value-strategy"></a>
 
-_Default_: median (numeric) + mode (categorical).  
+_Default_: median (numeric) + mode (categorical).
 _Optional_: `--knn` flag enables **`KNNImputer`** (k=5).
 
 ```bash
@@ -365,3 +486,116 @@ python -m ml_pipeline.prepare \
        --scaler robust \
        --balance smote
 ```
+
+## 4 — Phase 4 · **Exploratory Data Analysis (EDA)**<a name="4-phase-4--exploratory-data-analysis"></a>
+
+> Two Python scripts power this phase:
+>
+> - **[`EDA.py`](src/Data%20Analysis/EDA.py)** – core stats & plots (4A-4C)
+> - **[`EDA_advance.py`](src/Data%20Analysis/EDA_advance.py)** – deep-dive add-ons (4D)
+>
+> Both read the interim parquet produced by Phase-3 (`data/interim/clean.parquet`)  
+> and populate `reports/eda/…` with CSV summaries, PNGs, and manifests that
+> downstream notebooks (or model cards) can embed.
+
+---
+
+### 4A Univariate Statistics & Plots<a name="4a-univariate-statistics--plots"></a>
+
+| Metric / Test                                                         | Implementation                     | Output artefact                                         |
+| --------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------- |
+| mean, median, variance, std, skew, kurt                               | `df.amount.agg([...])`             | `reports/eda/univariate_summary.csv`                    |
+| IQR                                                                   | `q3 - q1`                          | same CSV                                                |
+| Normality: Shapiro–Wilk, D’Agostino K², Jarque–Bera, Anderson–Darling | `scipy.stats`                      | CSV columns `shapiro_p`, `dagostino_p`, `jb_p`          |
+| Outliers flag                                                         | Z-score / IQR fence, density plot  | embedded inside PNGs                                    |
+| Visuals                                                               | Histogram + KDE, box-plot, QQ-plot | one PNG per numeric feature in `reports/eda/uva/plots/` |
+
+> **Run only this section**
+>
+> ```bash
+> python -m Data_Analysis.EDA --mode uva
+> ```
+
+---
+
+### 4B Bivariate Tests & Visuals<a name="4b-bivariate-tests--visuals"></a>
+
+| Pair Type       | Parametric | Non-Parametric        | Effect-size |
+| --------------- | ---------- | --------------------- | ----------- |
+| num-num         | Pearson r  | Spearman ρ, Kendall τ | `r²`        |
+| num vs 2 groups | Welch-t    | Mann–Whitney U        | Cohen’s d   |
+| num vs k groups | ANOVA      | Kruskal–Wallis        | η²          |
+| cat-cat         | χ²         | Fisher exact (2×2)    | Cramer V    |
+
+- **Joint-plot regressions** and **correlation heat-map** saved to  
+  `reports/eda/bva/plots/`.
+- Results table → `bivariate_summary.csv`.
+
+```bash
+python -m Data_Analysis.EDA --mode bva
+```
+
+````
+
+---
+
+### 4C Multivariate Tests & Diagnostics<a name="4c-multivariate-tests--diagnostics"></a>
+
+| Goal                   | Test / Tool             | File / Visual         |
+| ---------------------- | ----------------------- | --------------------- |
+| Multicollinearity      | VIF                     | `vif.csv`             |
+| Multivariate normality | **Mardia** P-value      | `mva_summary.json`    |
+| Overall association    | MANOVA (Pillai’s Trace) | printed to console    |
+| Dimensionality         | PCA scree ≥ 90 %        | `pca_scree.png`       |
+| Cluster tendency       | Hopkins statistic       | manifest              |
+| Heteroscedasticity     | Breusch–Pagan           | manifest              |
+| Correlation dendrogram | seaborn `clustermap`    | `corr_dendrogram.png` |
+
+```bash
+python -m Data_Analysis.EDA --mode mva
+```
+
+---
+
+### 4D Advanced EDA — Mutual Info · Cramer-V · Embeddings · TS Decomp<a name="src/Data%20Analysis/EDA_advance.py"></a>
+
+File: **[`EDA_advance.py`](src/Data%20Analysis/EDA_advance.py)**
+
+What it adds on top of 4A-4C:
+
+| Block                   | Highlight                                   |
+| ----------------------- | ------------------------------------------- |
+| Categorical association | **Cramer-V matrix** + mosaic plots          |
+| Feature importance      | **Mutual Information** (numeric & one-hot)  |
+| Interaction viz         | PairGrid by target, 2-D UMAP / 3-D t-SNE    |
+| Leakage sniff           | Future-timestamp overlap check              |
+| Time-series             | Seasonal decomposition, ACF/PACF plots      |
+| Clustering quality      | k-means **elbow** + **silhouette** curves   |
+| Auto-profilers          | `ydata_profiling` HTML, `dabl.plot` summary |
+
+Outputs land in `reports/eda/advanced/`:
+
+```bash
+python -m Data_Analysis.EDA_advance
+```
+
+---
+
+#### 🔍 Where to look after a run
+
+```
+reports/
+└── eda/
+    ├── univariate_summary.csv
+    ├── bivariate_summary.csv
+    ├── vif.csv
+    ├── mva_summary.json
+    ├── uva/plots/*.png
+    ├── bva/plots/*.png
+    ├── mva/plots/*.png
+    └── advanced/
+        ├── mutual_info.csv
+        ├── profile.html
+        └── *.png
+```
+````
