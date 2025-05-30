@@ -6,7 +6,7 @@ It captures the full _Machine-Learning Development Life-Cycle_ (MLDLC) in
 clearly separated phases—so every new problem you tackle starts with the same,
 battle-tested structure instead of an empty folder.
 
-### Why use this repo?
+## Why use this repo?
 
 - **Consistent anatomy** – one place for data, code, reports, and models
 - **Phase gates** – checklists ensure you don’t jump ahead with fuzzy scope
@@ -14,22 +14,7 @@ battle-tested structure instead of an empty folder.
 - **Extensible** – each phase ships with a runnable Python stub you can swap or extend
 - **Tool-agnostic** – works for tabular, NLP, vision, or time-series; local or cloud
 
-### High-level flow
-
-```
-
-Problem Definition  →  Data Collection  →  Preparation  →  EDA  →  Feature Eng
-↓                                                           ↑
-Success checklist                                   Continuous feedback
-↓                                                           ↑
-Model Design & Train  →  Eval & Hardening  →  Deploy  →  Monitor & Retrain
-
-```
-
-Clone it, tick off the Phase-1 checklist to lock your problem statement, then
-progress through the folders and scripts in order.
-
-## 0 — Repo Scaffold<a name="0-repo-scaffold"></a>
+## Repo Scaffold
 
 ```text
 .
@@ -57,7 +42,7 @@ progress through the folders and scripts in order.
 
 ---
 
-## 🗂️ Table of Contents — _granular & exhaustive_
+## 🗂️ Table of Contents
 
 0. [Repo Scaffold](#0-repo-scaffold)
 
@@ -144,12 +129,8 @@ progress through the folders and scripts in order.
 
 ## 1 — Phase 1 · Problem Definition<a name="1-phase-1--problem-definition"></a>
 
-> **Goal** — define the problem, scope, and data requirements.
-
-## 🧭 How I Break Down Any ML Problem (10-Year MLE Playbook)
-
-> A condensed checklist I’ve evolved after dozens of production projects  
-> — use it to turn a fuzzy idea into an implementable, testable ML plan.
+> **Goal** — turn a fuzzy idea into an implementable, testable ML plan..
+> A condensed checklist I’ve evolved after dozens of production projects
 
 ---
 
