@@ -1,4 +1,4 @@
-# 🛰️ MLDLC – End-to-End Machine-Learning Project Template
+# 🤖 MLDLC – End-to-End Machine-Learning Project Template
 
 This repository is a **ready-made workflow skeleton** for any ML project, small
 or large.  
@@ -42,7 +42,7 @@ battle-tested structure instead of an empty folder.
 
 ---
 
-## 🗂️ Table of Contents
+## Table of Contents
 
 0. [Repo Scaffold](#0-repo-scaffold)
 
@@ -181,7 +181,7 @@ flowchart LR
     F -->|trigger| B
 ```
 
-### 5 ✅ Problem-Clarity **Exit Checklist**
+### 5 Problem-Clarity **Exit Checklist**
 
 _(all boxes must be ticked before Phase 2 – Data Collection – may start)_
 
@@ -516,8 +516,6 @@ python -m ml_pipeline.prepare \
 python -m Data_Analysis.EDA --mode bva
 ```
 
-````
-
 ---
 
 ### 4C Multivariate Tests & Diagnostics<a name="4c-multivariate-tests--diagnostics"></a>
@@ -579,4 +577,3 @@ reports/
         ├── profile.html
         └── *.png
 ```
-````
