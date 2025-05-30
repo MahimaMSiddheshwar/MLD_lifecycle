@@ -22,7 +22,7 @@
 
 1. [Phase 1 — Problem Definition](#1-phase-1--problem-definition)
 
-2. [Phase 2 — **Data Collection**](#2-phase-2--data-collection)
+2. [Phase 2 — **Data Collection**](src/data_ingest/omni_collector.py)
    • [2A Flat-Files & Object Storage](#2a-flat-files--object-storage)
    • [2B Relational Databases](#2b-relational-databases)
    • [2C NoSQL & Analytical Stores](#2c-nosql--analytical-stores)
