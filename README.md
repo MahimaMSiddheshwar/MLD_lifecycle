@@ -72,5 +72,167 @@
 
 13. [License](#13-license)
 
+
+
+## 2 — Phase 2  ·  Data Collection<a name="2-phase-2--data-collection"></a>
+
+> **Goal** — pull data from *any* source, stamp it with lineage, mask PII, and
+> persist an immutable snapshot in `data/raw/` that DVC (or LakeFS) can track.  
+> The heavy lifting is baked into **[`OmniCollector`](src/data_ingest/omni_collector.py)**;
+> the subsections below show how each channel maps to one collector method,
+> plus security/gov-hooks you should enable in production.
+
+---
+
+### 2A  Flat-Files & Object Storage<a name="2a-flat-files--object-storage"></a>
+
+| Format | Example call | Notes |
+|--------|--------------|-------|
+| **CSV / TSV** | `oc.from_file("data/raw/users.csv")` | Auto-detects delimiter. |
+| **Excel** | `oc.from_file("marketing.xlsx")` | Supports multiple sheets (`pd.read_excel(sheet_name=...)`). |
+| **Parquet / ORC / Avro** | `oc.from_file("events.parquet")` | Requires `pyarrow`. |
+| **S3 / GCS / Azure Blob** | `oc.from_file("s3://my-bkt/2025/05/events.parquet")` | Pass `storage_options` → KMS, STS, IAM role. |
+| **ZIP / TAR** | `oc.from_file("archive.zip")` | Auto-extracts first file if single-member. |
+
+*Governance*: set bucket-policy to SSE-KMS, use **least-privilege IAM**; the
+collector runs regex-based email/phone redaction before snapshot-save.
+
+---
+
+### 2B  Relational Databases<a name="2b-relational-databases"></a>
+
+```python
+dsn   = "postgresql+psycopg2://ml_user:${PG_PWD}@pg-ro.acme.local:5432/warehouse"
+query = "SELECT uid, age, churn_flag, ts FROM analytics.users WHERE ts >= NOW()-INTERVAL '90 days'"
+df    = oc.from_sql(dsn, query)
+````
+
+*Extras*:
+
+* parameterised queries to avoid SQLi
+* use **read-only replica endpoints**
+* column-level encryption with pgcrypto (Postgres) or TDE (MySQL 8+)
+
+---
+
+### 2C  NoSQL & Analytical Stores<a name="2c-nosql--analytical-stores"></a>
+
+```python
+df = oc.from_mongo("mongodb://ro_user:${MONGO_PWD}@mongo-ro:27017",
+                   db="crm", coll="events",
+                   query={"ts": {"$gte": "2025-01-01"}})
 ```
+
+BigQuery & Snowflake are available via `oc.from_sql(...)`
+because they expose JDBC/SQLAlchemy drivers.
+
+---
+
+### 2D  APIs & Web Scraping<a name="2d-apis--web-scraping"></a>
+
+```python
+df_fx = oc.from_rest("https://api.exchangerate.host/latest",
+                     params={"base": "USD"})
 ```
+
+If you must scrape:
+
+```python
+from bs4 import BeautifulSoup, requests
+html = requests.get("https://example.com/pricelist", timeout=15).text
+price_df = pd.read_html(str(BeautifulSoup(html,"lxml").find("table")))[0]
+oc.save(price_df, "price_table")
+```
+
+*Security*: respect robots.txt, user-agent throttling, rotate tokens.
+
+---
+
+### 2E  Streaming / Message Queues<a name="2e-streaming--message-queues"></a>
+
+```python
+# Consume the last 100 Kafka messages (JSON) without committing offsets
+stream_df = oc.from_kafka(topic="tx-events",
+                          bootstrap="kafka-broker:9092",
+                          batch=100, group_id="omni-probe")
+```
+
+*Checkpointing*: commit offsets only after `oc.save()` succeeds,
+so failed runs can re-process safely.
+
+---
+
+### 2F  SaaS & Cloud-Native Connectors<a name="2f-saas--cloud-native-connectors"></a>
+
+```python
+df_sheet = oc.from_gsheet(sheet_key=os.getenv("GSHEET_ID"),
+                          creds_json="gcp-sa.json")
+```
+
+Need HubSpot, Stripe, Salesforce?
+Either:
+
+1. Call their REST/Bulk API → `oc.from_rest()`, or
+2. Use Fivetran / Airbyte to land data in Postgres/Snowflake, then `from_sql`.
+
+---
+
+### 2G  Sensors & IoT Ingestion<a name="2g-sensors--iot"></a>
+
+```python
+iot_df = oc.from_mqtt(broker="192.168.1.50",
+                      topic="factory/line1/#",
+                      timeout=10)         # seconds to listen
+```
+
+Store raw telemetry uncompressed → `Parquet+ZSTD` later in an Apache Iceberg or
+TimescaleDB bucket for long-term analytics.
+
+---
+
+### 2H  Data Privacy & Governance Hooks<a name="2h-data-privacy--governance-hooks"></a>
+
+* Built-in regex scrub for **emails** and **phone numbers**
+* Extend `_mask()` to hash SSNs, tokenize names (use Bloom filter / format-preserving encryption).
+* Tag snapshots with `dataset`, `source_system`, and `sensitivity` in DVC
+  (`dvc params`) for future lineage queries.
+
+---
+
+### 2I  Logging, Auditing & Checksums<a name="2i-logging-auditing--checksums"></a>
+
+Every collector call:
+
+1. **SHA-256** of the CSV bytes (or canonical Parquet bytes)
+2. **row-count**
+3. **source label**
+4. UTC timestamp
+
+is appended to `logs/ingest.log`, e.g.
+
+```
+2025-05-30T23:14:09 | INFO | flat:events.parquet  | rows= 104 876 | sha256=7b12e0f83e01
+```
+
+Use this file plus DVC commit history for a tamper-evident audit trail.
+
+---
+
+### 🔧 Quick-Start Recap
+
+```bash
+# install in editable mode
+pip install -e .
+
+# CLI one-liner pulls CSV and snapshots into data/raw/
+omni-collect file data/raw/users.csv
+
+# REST example
+omni-collect rest https://api.exchangerate.host/latest
+```
+
+`omni-collect` is defined in `pyproject.toml` under `[project.scripts]`
+and implemented in **`src/data_ingest/omni_cli.py`**, which wraps the
+same `OmniCollector` methods shown above.
+
+
