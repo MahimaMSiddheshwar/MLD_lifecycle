@@ -224,7 +224,7 @@ _(all boxes must be ticked before Phase 2 – Data Collection – may start)_
 
 > **Goal** — pull data from _any_ source, stamp it with lineage, mask PII, and
 > persist an immutable snapshot in `data/raw/` that DVC (or LakeFS) can track.
-> The heavy lifting is baked into **[`OmniCollector`](src/data_ingest/omni_collector.py)**;
+> The heavy lifting is baked into **[`OmniCollector`](src/data_ingest/data_collector.py)**;
 > the subsections below show how each channel maps to one collector method,
 > plus security/gov-hooks you should enable in production.
 
