@@ -1,4 +1,4 @@
-# 🤖 MLDLC – End-to-End Machine-Learning Project Template
+# 👾 MLDLC – End-to-End Machine-Learning Project Template
 
 This repository is a **ready-made workflow skeleton** for any ML project, small
 or large.  
@@ -21,7 +21,7 @@ battle-tested structure instead of an empty folder.
 ├── data/                         # raw/, interim/, processed/
 ├── src/
 │   ├── Data Ingestion/
-│   │   └── omni_collector.py     # Phase-2 engine  (⇨ see link below)
+│   │   └── data_collector.py     # Phase-2 engine  (⇨ see link below)
 │   ├── Data Cleaning/
 │   │   ├── data_preparation.py   # Prep pipeline  (Phase-3)
 │   │   └── data_wrangling_cleaning.py
@@ -31,7 +31,7 @@ battle-tested structure instead of an empty folder.
 │   └── Feature Engineering/
 │       └── feature_engineering.py
 ├── notebooks/                    # Optional ad-hoc ipynb
-├── reports/                      # Auto EDA, drift, model cards
+├── reports/                      # Auto-generated EDA, drift, model cards
 ├── models/                       # MLflow or on-disk artefacts
 ├── docker/                       # Dockerfile & helpers
 ├── dvc.yaml                      # DVC pipeline
@@ -185,17 +185,17 @@ flowchart LR
 
 _(all boxes must be ticked before Phase 2 – Data Collection – may start)_
 
-| ⬜  | Requirement                                               | Hint                                                    |
-| --- | --------------------------------------------------------- | ------------------------------------------------------- |
-|     | **Business objective** phrased as one SMART sentence      | “Reduce voluntary churn by 15 % within 2 quarters”      |
-|     | **Unit of analysis** defined                              | “prediction per _customer-ID_ per month”                |
-|     | **Target variable** unambiguously stated and time-stamped | `is_churn` ∈ {0, 1} measured 30 days after billing date |
-|     | **Primary success metric** and numeric threshold agreed   | “F1 ≥ 0.82 on 2024-Q4 hold-out”                         |
-|     | **Constraints & assumptions** captured                    | latency, region, budget, feature freeze date            |
-|     | **High-level ethical / bias risks** listed                | sensitive attributes, potential exclusion harms         |
-|     | **Regulatory touch-points** identified                    | GDPR/CCPA, sector-specific rules                        |
-|     | **Baseline approach** written down                        | random or simple heuristic score                        |
-|     | All above items reviewed & signed off (email / doc)       | attach link in project tracker                          |
+- [ ] **Business objective** phrased as one SMART sentence  
+       _e.g._ “Reduce voluntary churn by 15 % within 2 quarters”
+- [ ] **Unit of analysis** defined – “prediction per _customer-ID_ per month”
+- [ ] **Target variable** unambiguously stated and time-stamped  
+       (`is_churn` ∈ {0, 1} measured 30 days after billing date)
+- [ ] **Primary success metric** & numeric threshold agreed – “F1 ≥ 0.82 on Q4 hold-out”
+- [ ] **Constraints & assumptions** captured (latency, region, budget, feature-freeze date)
+- [ ] **High-level ethical / bias risks** listed (sensitive attributes, exclusion harms)
+- [ ] **Regulatory touch-points** identified (GDPR/CCPA, sector rules)
+- [ ] **Baseline approach** written down (random or simple heuristic score)
+- [ ] **All items reviewed & signed off** (attach link in project tracker)
 
 > When the table is fully checked, create an issue titled  
 > **“Phase-1 Complete – proceed to Data Collection”** and assign it to the team lead.  
@@ -523,7 +523,7 @@ python -m Data_Analysis.EDA --mode bva
 | Goal                   | Test / Tool             | File / Visual         |
 | ---------------------- | ----------------------- | --------------------- |
 | Multicollinearity      | VIF                     | `vif.csv`             |
-| Multivariate normality | **Mardia** P-value      | `mva_summary.json`    |
+| Multivariate normality | **Mardia** P-val < 0.05 | `mva_summary.json`    |
 | Overall association    | MANOVA (Pillai’s Trace) | printed to console    |
 | Dimensionality         | PCA scree ≥ 90 %        | `pca_scree.png`       |
 | Cluster tendency       | Hopkins statistic       | manifest              |
