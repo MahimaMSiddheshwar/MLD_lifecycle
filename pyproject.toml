@@ -1,0 +1,29 @@
+[build-system]
+requires      = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mldlc-toolkit"
+version = "0.1.0"
+description = "Omni data-ingestion & MLDLC helpers"
+authors = [{name = "Aashay4123", email = "aashayphirke5798@gmail.com"}]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+  "pandas>=2.0",
+  "requests",
+  "boto3",
+  "sqlalchemy",
+  "pymongo",
+  "kafka-python",
+  "gspread",
+  "paho-mqtt",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}     # all code lives under /src
+packages    = ["data_ingest"]  # or `find = true` if you prefer
+
+[project.scripts]              # console-entry-point
+omni-collect = "data_ingest.omni_cli:main"
