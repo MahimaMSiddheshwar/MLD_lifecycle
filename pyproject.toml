@@ -1,29 +1,62 @@
+# ─────────────────────────────────────────────────────────────
+#   pyproject.toml   – unified build & dependency spec
+# ─────────────────────────────────────────────────────────────
 [build-system]
 requires      = ["setuptools>=67", "wheel"]
 build-backend = "setuptools.build_meta"
 
+# ─────────────────────────────────────────────────────────────
 [project]
-name = "mldlc-toolkit"
-version = "0.1.0"
-description = "Omni data-ingestion & MLDLC helpers"
-authors = [{name = "Aashay4123", email = "aashayphirke5798@gmail.com"}]
-readme = "README.md"
+name            = "mldlc-toolkit"
+version         = "0.1.0"
+description     = "Omni data-ingestion, EDA & other MLDLC helpers"
+authors         = [{ name = "Aashay4123", email = "aashayphirke5798@gmail.com" }]
+readme          = "README.md"
 requires-python = ">=3.10"
 
+# — Core run-time deps (Phase-2 collector works out-of-the-box)
 dependencies = [
   "pandas>=2.0",
   "requests",
-  "boto3",
-  "sqlalchemy",
+  "boto3",                     # S3
+  "SQLAlchemy>=2.0",
+  "psycopg2-binary",           # Postgres driver (optional but common)
   "pymongo",
   "kafka-python",
   "gspread",
+  "oauth2client",              # gspread auth helper
   "paho-mqtt",
+  "pydantic",            # pulled by pandera, but list explicitly
+  "missingno",
+  "imblearn",            # SMOTE / NearMiss
+  "great_expectations",  # only if you plan to use --gx flag
 ]
 
-[tool.setuptools]
-package-dir = {"" = "src"}     # all code lives under /src
-packages    = ["data_ingest"]  # or `find = true` if you prefer
+# — Optional extras  -----------------------------------------------------------
+#    install with:  pip install -e .[eda]   or  pip install -e .[dev]
+[project.optional-dependencies]
+eda = [
+  "statsmodels>=0.14",
+  "pingouin>=0.5",
+]
+profile = [
+  "ydata-profiling>=4.6",
+]
+dev = [
+  # everything from eda + profile
+  "statsmodels>=0.14",
+  "pingouin>=0.5",
+  "ydata-profiling>=4.6",
+  # lint / test tools (if you like)
+  "pytest",
+  "ruff",
+]
 
-[project.scripts]              # console-entry-point
+# ─────────────────────────────────────────────────────────────
+[tool.setuptools]                # source layout
+package-dir = {"" = "src"}
+packages    = ["data_ingest", "Data_Cleaning", "Data_Analysis", "Feature_Engineering"]
+
+# ─────────────────────────────────────────────────────────────
+[project.scripts]
 omni-collect = "data_ingest.omni_cli:main"

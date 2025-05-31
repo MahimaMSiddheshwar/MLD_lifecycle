@@ -1,200 +1,295 @@
-"""
-src/ml_pipeline/prepare.py
--------------------------------------------------
-End-to-end data-preparation pipeline for Phase-3.
-Run standalone:
-
-    python -m ml_pipeline.prepare        # defaults
-    python -m ml_pipeline.prepare --knn  # fancy imputation
-"""
 
 from __future__ import annotations
-import argparse
-import json
+import pyjanitor as jan
+import pandera as pa
+import warnings
 import logging
-import os
+import pandas as pd
+import json
+import numpy as np
+import argparse
 from pathlib import Path
 from datetime import datetime
-
-import numpy as np
-import pandas as pd
-import pandera as pa
-import pyjanitor as jan
-import missingno as msno
 from scipy import stats
+import missingno as msno
 from sklearn.impute import KNNImputer
-from sklearn.preprocessing import (
-    StandardScaler, RobustScaler, PowerTransformer
-)
+from sklearn.preprocessing import StandardScaler, RobustScaler, PowerTransformer, QuantileTransformer
 from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import LocalOutlierFactor
 from imblearn.over_sampling import SMOTE
 from imblearn.under_sampling import NearMiss
 
-# ───────── logging ────────────────────────────────────────────
+"""
+src/ml_pipeline/prepare.py
+-------------------------------------------------
+End-to-end data-preparation pipeline (Phase-3).
+
+Run:
+    python -m ml_pipeline.prepare                # defaults
+    python -m ml_pipeline.prepare --help         # all flags
+"""
+
+
+# optional DQ suite
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore")
+    try:
+        import great_expectations as gx            # type: ignore
+        GX_OK = True
+    except ModuleNotFoundError:
+        GX_OK = False
+
+# ───────── config & paths ────────────────────────────────────
+RAW = Path("data/raw/combined.parquet")
+INT = Path("data/interim/clean.parquet")
+PROC = Path("data/processed/scaled.parquet")
+LINE = Path("reports/lineage")
+LINE.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("prepare")
 
-# ───────── paths & schema  ────────────────────────────────────
-RAW = Path("data/raw/combined.parquet")
-INT = Path("data/interim/clean.parquet")
-PROC = Path("data/processed/scaled.parquet")
-
 schema = pa.DataFrameSchema({
-    "uid": pa.Column(pa.String, nullable=False),
-    "age": pa.Column(pa.Int, checks=pa.Check.ge(13)),
-    "city": pa.Column(pa.String),
+    "uid":        pa.Column(pa.String, nullable=False),
+    "age":        pa.Column(pa.Int,    checks=pa.Check.ge(13)),
+    "city":       pa.Column(pa.String),
     "last_login": pa.Column(pa.DateTime),
-    "amount": pa.Column(pa.Float),
-    "is_churn": pa.Column(pa.Int, checks=pa.Check.isin([0, 1]))
+    "amount":     pa.Column(pa.Float,  checks=pa.Check.ge(0)),
+    "is_churn":   pa.Column(pa.Int,    checks=pa.Check.isin([0, 1]))
 })
 
-# ══════════════════════════════════════════════════════════════
 
-
+# ╔══════════════════════════════════════════════════════════╗
+# ║                    pipeline class                        ║
+# ╚══════════════════════════════════════════════════════════╝
 class DataPreparer:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict):          # cfg assembled from CLI
         self.cfg = cfg
-        self.df: pd.DataFrame | None = None
+        self.df: pd.DataFrame
 
-    # ── 3A Schema & coercion ──────────────────────────────────
+    # ── 3A  schema + (opt) great-expectations  --------------
     def load_and_validate(self):
         self.df = pd.read_parquet(RAW).janitor.clean_names()
         self.df = schema.validate(self.df)
-        log.info("validated: %s", self.df.shape)
+        log.info("validated schema OK → %s", self.df.shape)
 
-    # ── 3B Missing-value strategy ─────────────────────────────
+        if self.cfg["gx"] and GX_OK:
+            ctx = gx.DataContext.create()
+            ds = ctx.sources.add_pandas(name="phase3", dataframe=self.df)
+            suite = ctx.add_expectation_suite("dq_quick")
+            # simple automated expectations
+            suite.add_expectation("expect_table_columns_to_match_ordered_list",
+                                  column_list=self.df.columns.tolist())
+            suite.add_expectation("expect_column_values_to_not_be_null",
+                                  column="uid")
+            res = ds.validate(expectation_suite=suite)
+            if not res.success:               # fail fast
+                raise ValueError("Great-Expectations suite failed")
+            res.save()                        # HTML in gx/uncommitted
+            log.info("Great-Expectations ✓")
+
+    # ── 3B  missing-value handling + preview ----------------
     def impute(self):
-        df = self.df
-        # visual snapshot
-        msno.matrix(df.sample(min(1000, len(df))))
-        # numeric → median / KNN
-        num_cols = df.select_dtypes("number").columns
-        cat_cols = df.select_dtypes("object").columns
+        msno.matrix(self.df.sample(min(1000, len(self.df))))
+        (LINE / "missing_matrix.png").write_bytes(plt_bytes())  # helper below
+
+        num = self.df.select_dtypes("number").columns
+        cat = self.df.select_dtypes("object").columns
 
         if self.cfg["knn_impute"]:
-            imputer = KNNImputer(n_neighbors=5)
-            df[num_cols] = imputer.fit_transform(df[num_cols])
+            self.df[num] = KNNImputer(
+                n_neighbors=5).fit_transform(self.df[num])
         else:
-            df[num_cols] = df[num_cols].fillna(df[num_cols].median())
+            self.df[num] = self.df[num].fillna(self.df[num].median())
 
-        # categorical → mode
-        for c in cat_cols:
-            df[c].fillna(df[c].mode(dropna=True)[0], inplace=True)
+        for c in cat:
+            self.df[c].fillna(self.df[c].mode(dropna=True)[0], inplace=True)
 
-        self.df = df
-        log.info("imputed: nulls=%d", self.df.isna().sum().sum())
+        log.info("impute done (missing=%d)", self.df.isna().sum().sum())
 
-    # ── 3C Outlier handling (IQR / z-score / IF) ──────────────
+        # drop-missing threshold
+        if self.cfg["drop_miss"] is not None:
+            thresh = self.cfg["drop_miss"]
+            na_frac = self.df.isna().mean()
+            drops = na_frac[na_frac > thresh].index.tolist()
+            self.df.drop(columns=drops, inplace=True)
+            if drops:
+                (LINE / "drop_missing.json").write_text(json.dumps(drops))
+                log.info("dropped %d cols for >%0.2f NaNs", len(drops), thresh)
+
+    # ── 3C  duplicates & constant columns -------------------
+    def dedup_prune(self):
+        if self.cfg["dedup"]:
+            before = len(self.df)
+            self.df.drop_duplicates(subset=self.cfg["dedup"], inplace=True)
+            log.info("dedup → %d rows (-%d)",
+                     len(self.df), before-len(self.df))
+
+        const_thresh = self.cfg["prune_const"]
+        nunique = self.df.nunique(dropna=False)/len(self.df)
+        const = nunique[nunique > const_thresh].index
+        if len(const):
+            self.df.drop(columns=const, inplace=True)
+            (LINE / "drop_const.json").write_text(json.dumps(const.tolist()))
+            log.info("pruned %d quasi-constant cols", len(const))
+
+    # ── 3C  outlier treatment --------------------------------
     def treat_outliers(self):
-        df, method = self.df, self.cfg["outlier"]
-        if method == "iqr":
-            q1, q3 = df.amount.quantile([.25, .75])
+        m = self.cfg["outlier"]
+        s = self.df["amount"]  # demo column
+        if m == "iqr":
+            q1, q3 = s.quantile([.25, .75])
             fence = 1.5*(q3-q1)
-            df = df[df.amount.between(q1-fence, q3+fence)]
-        elif method == "zscore":
-            z = np.abs(stats.zscore(df.amount))
-            df = df[z < 3]
-        elif method == "iso":
-            iso = IsolationForest(contamination=0.01, random_state=7)
-            mask = iso.fit_predict(df[["amount"]]) == 1
-            df = df[mask]
-        self.df = df
-        log.info("outlier-treated: %s", df.shape)
+            mask = s.between(q1-fence, q3+fence)
+        elif m == "zscore":
+            mask = np.abs(stats.zscore(s)) < 3
+        elif m == "iso":
+            mask = IsolationForest(contamination=0.01, random_state=7)\
+                .fit_predict(s.to_frame()) == 1
+        else:  # LOF
+            mask = LocalOutlierFactor(n_neighbors=20, contamination=0.01)\
+                .fit_predict(s.to_frame()) == 1
+        self.df = self.df[mask]
+        log.info("%s outlier filter → %s", m, self.df.shape)
 
-    # ── 3D Transformation & scaling ───────────────────────────
+    # ── 3D  transform / scale --------------------------------
     def transform(self):
-        df = self.df.copy()
-        num = df.select_dtypes("number").columns
+        num = self.df.select_dtypes("number").columns
+
+        # auto-log skewed
+        if self.cfg["auto_log"]:
+            for col in num:
+                if abs(self.df[col].skew()) > 1:
+                    self.df[col] = np.log1p(self.df[col])
+                    log.debug("log1p(%s)", col)
+
         scaler_name = self.cfg["scaler"]
+        scaler = {"standard": StandardScaler,
+                  "robust":   RobustScaler,
+                  "yeo": lambda: PowerTransformer(method="yeo-johnson")}[scaler_name]()
+        self.df[num] = scaler.fit_transform(self.df[num])
 
-        # power transform first (log/yeo)
-        if self.cfg["log_amount"]:
-            df["amount"] = np.log1p(df["amount"])
+        if self.cfg["qt"]:
+            qt = QuantileTransformer(output_distribution="normal")
+            self.df[num] = qt.fit_transform(self.df[num])
 
-        if scaler_name == "standard":
-            scaler = StandardScaler()
-        elif scaler_name == "robust":
-            scaler = RobustScaler()
-        else:  # yeo-johnson
-            scaler = PowerTransformer(method="yeo-johnson")
-
-        df[num] = scaler.fit_transform(df[num])
-        self.df = df
         log.info("scaled with %s", scaler_name)
 
-    # ── 3E Class-imbalance remed. (optional) ──────────────────
+    # ── 3E  rebalance ----------------------------------------
     def rebalance(self):
         if not self.cfg["balance"]:
             return
         X = self.df.drop(columns="is_churn")
         y = self.df["is_churn"]
+        sampler = SMOTE(
+            random_state=0) if self.cfg["balance"] == "smote" else NearMiss()
+        Xb, yb = sampler.fit_resample(X, y)
+        self.df = pd.concat([Xb, yb], axis=1)
+        log.info("rebalance %s → pos rate %0.2f",
+                 self.cfg["balance"], self.df.is_churn.mean())
 
-        if self.cfg["balance"] == "smote":
-            X_bal, y_bal = SMOTE(random_state=0).fit_resample(X, y)
-        else:
-            X_bal, y_bal = NearMiss().fit_resample(X, y)
+    # ── 3G  high-corr pruning --------------------------------
+    def drop_correlated(self):
+        thr = self.cfg["drop_corr"]
+        if thr is None:
+            return
+        num = self.df.select_dtypes("number").columns
+        corr = self.df[num].corr().abs()
+        upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+        to_drop = [c for c in upper.columns if any(upper[c] > thr)]
+        self.df.drop(columns=to_drop, inplace=True)
+        if to_drop:
+            (LINE/"drop_corr.json").write_text(json.dumps(to_drop))
+            log.info("dropped %d highly-corr cols (>%0.2f)", len(to_drop), thr)
 
-        self.df = pd.concat([X_bal, y_bal], axis=1)
-        log.info("rebalance → %s (pos=%0.2f)",
-                 self.df.shape, self.df.is_churn.mean())
-
-    # ── 3F Versioning & lineage manifest ─────────────────────
+    # ── 3F  save versions ------------------------------------
     def save(self):
         INT.parent.mkdir(parents=True, exist_ok=True)
         PROC.parent.mkdir(parents=True, exist_ok=True)
-
-        # interim save (pre-scaling)
-        self.df.to_parquet(INT, index=False)
-
-        # final save
+        self.df.to_parquet(INT,  index=False)
         self.df.to_parquet(PROC, index=False)
 
-        meta = {
-            "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
-            "rows": len(self.df),
-            "scaler": self.cfg["scaler"],
-            "outlier": self.cfg["outlier"],
-            "balance": self.cfg["balance"],
-            "raw_sha": self.cfg.get("raw_sha", "n/a")
-        }
-        Path("reports/lineage").mkdir(parents=True, exist_ok=True)
-        (Path("reports/lineage") / "prep_manifest.json").write_text(
-            json.dumps(meta, indent=2)
+        meta = dict(
+            timestamp=datetime.utcnow().isoformat(timespec="seconds"),
+            rows=len(self.df),
+            scaler=self.cfg["scaler"],
+            outlier=self.cfg["outlier"],
+            balance=self.cfg["balance"],
+            drop_miss=self.cfg["drop_miss"],
+            drop_corr=self.cfg["drop_corr"],
+            raw_sha=self.cfg.get("raw_sha", "n/a")
         )
-        log.info("✅ saved interim & processed; lineage manifest written")
+        (LINE/"prep_manifest.json").write_text(json.dumps(meta, indent=2))
+        log.info("✅ saved ➜ interim & processed; lineage manifest written")
 
-    # ── pipeline orchestration ────────────────────────────────
+    # ── orchestrate ------------------------------------------
     def run(self):
         self.load_and_validate()
         self.impute()
+        self.dedup_prune()
         self.treat_outliers()
         self.transform()
         self.rebalance()
+        self.drop_correlated()
         self.save()
 
 
-# ══════════════════════════════════════════════════════════════
+# ╔══════════════════════════════════════════════════════════╗
+# ║                         CLI                              ║
+# ╚══════════════════════════════════════════════════════════╝
 def cli():
-    p = argparse.ArgumentParser(prog="prepare")
-    p.add_argument("--knn", action="store_true",
-                   help="use KNNImputer instead of median/mode")
-    p.add_argument("--outlier", choices=["iqr", "zscore", "iso"],
-                   default="iqr")
-    p.add_argument("--scaler", choices=["standard", "robust", "yeo"],
-                   default="standard")
-    p.add_argument("--balance", choices=["none", "smote", "nearmiss"],
-                   default="none")
-    cfg = vars(p.parse_args())
+    p = argparse.ArgumentParser()
+    p.add_argument("--knn",           action="store_true",
+                   help="use KNNImputer")
+    p.add_argument("--outlier",       default="iqr",
+                   choices=["iqr", "zscore", "iso", "lof"])
+    p.add_argument("--scaler",        default="standard",
+                   choices=["standard", "robust", "yeo"])
+    p.add_argument("--qt",            action="store_true",
+                   help="add quantile transform")
+    p.add_argument("--auto-log",      action="store_true",
+                   help="log1p skewed numeric")
+    p.add_argument("--balance",       default=None,
+                   choices=[None, "smote", "nearmiss"])
+    p.add_argument("--drop-miss",     type=float,
+                   help="drop cols with NaN fraction > p")
+    p.add_argument("--drop-corr",     type=float,
+                   help="drop cols with |corr| > p")
+    p.add_argument("--dedup",         type=str,
+                   help="column(s) to deduplicate on")
+    p.add_argument("--prune-const",   type=float, default=0.99,
+                   help="threshold for quasi-constant drop")
+    p.add_argument("--gx",            action="store_true",
+                   help="run Great Expectations")
+    args = vars(p.parse_args())
 
-    cfg = {  # defaults + flags
-        "knn_impute": cfg["knn"],
-        "outlier": cfg["outlier"],
-        "log_amount": True,
-        "scaler": cfg["scaler"],
-        "balance": cfg["balance"] if cfg["balance"] != "none" else None
-    }
+    cfg = dict(
+        knn_impute=args["knn"],
+        outlier=args["outlier"],
+        scaler=args["scaler"],
+        qt=args["qt"],
+        auto_log=args["auto_log"],
+        balance=args["balance"],
+        drop_miss=args["drop_miss"],
+        drop_corr=args["drop_corr"],
+        dedup=args["dedup"].split(",") if args["dedup"] else None,
+        prune_const=args["prune_const"],
+        gx=args["gx"],
+    )
     DataPreparer(cfg).run()
+
+
+# helper to grab current matplotlib figure as bytes (used once above)
+def plt_bytes():
+    import matplotlib.pyplot as plt
+    import io
+    bio = io.BytesIO()
+    plt.savefig(bio, format="png")
+    bio.seek(0)
+    buf = bio.read()
+    plt.close()
+    return buf
 
 
 if __name__ == "__main__":

@@ -61,22 +61,23 @@ battle-tested structure instead of an empty folder.
 
 3. [Phase 3 — **Data Preparation**](src/Data%20Cleaning/data_preparation.py)
    • [3A Schema Validation & Data Types](#3a-schema-validation--data-types)
+   • [3B1 De-duplication and Invariant Pruning](#3b-dedup)
    • [3B Missing-Value Strategy](#3b-missing-value-strategy)
    • [3C Outlier Detection & Treatment](#3c-outlier-detection--treatment)
    • [3D Data Transformation & Scaling](#3d-data-transformation--scaling)
    • [3E Class / Target Balancing](#3e-class-target-balancing)
    • [3F Data Versioning & Lineage](#3f-data-versioning--lineage)
-
+   • [3G Feature Pruning (High NaN / High Corr)](#3g-prune)
 4. [Phase 4 — **Exploratory Data Analysis (EDA)**](src/Data%20Analysis/EDA.py)
    • [4A Univariate Statistics & Plots](#4a-univariate-statistics--plots)
    • [4B Bivariate Tests & Visuals](#4b-bivariate-tests--visuals)
    • [4C Multivariate Tests & Diagnostics](#4c-multivariate-tests--diagnostics)
    • [4D Advanced EDA (MI · Cramer-V · Embeddings · TS Decomp)](src/Data%20Analysis/EDA_advance.py)
 
-5·½. [Dataset Partition & Baseline Benchmarking](#5.5-phase-split-baseline)
+5·½. [Dataset Partition & Baseline Benchmarking](#5.5-phase-baseline-freeze)
 
 5. [Phase 5 — Feature Engineering](src/Feature%20Engineering/feature_engineering.py)
-   • [5A Scaling & Normalization](#5a-scaling--normalization)
+   • [5A Scaling & Normalization](#5-phase-5--feature-engineering)
    • [5B Encoding Categorical Variables](#5b-encoding-categorical-variables)
    • [5C Handling Imbalanced Data](#5c-handling-imbalanced-data)
    • [5D Dimensionality Reduction](#5d-dimensionality-reduction)
@@ -128,45 +129,83 @@ battle-tested structure instead of an empty folder.
 
 ## 1 — Phase 1 · Problem Definition<a name="1-phase-1--problem-definition"></a>
 
-> **Goal** — turn a fuzzy idea into an implementable, testable ML plan..
-> A condensed checklist I’ve evolved after dozens of production projects
+> **Goal** — crystallise a fuzzy idea into an _implementable, testable and
+> measurable_ ML plan.  
+> This phase is finished only when every item in the **Exit Checklist** is
+> tick-boxed and signed off.
 
 ---
 
-### 1 Clarify the Business “Why”
+### 1 · Clarify the Business “Why”
 
-| Ask                                                 | Why it matters                                         |
-| --------------------------------------------------- | ------------------------------------------------------ |
-| _“If the model is perfect tomorrow, what changes?”_ | forces ROI thinking, surfaces hidden KPIs              |
-| _“Who loses sleep if this fails?”_                  | reveals actual decision-makers / veto-holders          |
-| _“What is the cost of a wrong prediction?”_         | calibrates class-imbalance weighting, thresholds, SLAs |
+| Ask                                                     | Why it matters                                         |
+| ------------------------------------------------------- | ------------------------------------------------------ |
+| _“If the model is perfect tomorrow, what changes?”_     | forces ROI thinking, surfaces hidden KPIs              |
+| _“Who loses sleep if this fails?”_                      | reveals actual decision-makers / veto-holders          |
+| _“What is the cost of a wrong prediction?”_             | calibrates class-imbalance weighting, thresholds, SLAs |
+| **“What is the current manual / heuristic benchmark?”** | Defines the _baseline to beat_                         |
 
 ---
 
-### 2 Translate to an ML Task
+### 2 · Translate to an ML Task
 
-1. **Prediction vs. ranking vs. clustering?**  
+1. **Prediction vs. ranking vs. clustering?**
    Map to _supervised_, _recommender_, _unsupervised_ or _forecasting_ bucket.
-2. **Unit of prediction** (row-level? session? account? pixel?).  
+2. **Unit of prediction** (row-level? session? account? pixel?).
    Mis-scoping here kills performance later.
 3. **Latency tolerance** → batch, near-real-time, or streaming.
+4. **Interpretability & constraints** &nbsp;—&nbsp; e.g. model must be explainable
+5. **Regulatory context** &nbsp;—&nbsp; GDPR, HIPAA, sector-specific rules
 
-> _Tip_: if you can’t phrase the target as a column in a future CSV,  
+> _Tip_: if you can’t phrase the target as a column in a future CSV,
 > you don’t have a learnable task yet.
 
 ---
 
-### 3 Do a Data Reality Check _before_ Deep EDA
+### 3 · Do a Data Reality Check _before_ Deep EDA
 
 - Column availability at **prediction time** (no future leakage).
-- Volume vs. freshness vs. drift risk.
+- Gauge **volume vs freshness vs drift risk**.
 - Quick uni-variate histograms → smell test for PII, bogus zeros, unit errors.
-- **Baselines**: random, constant, or simple ruleset.  
+- Compare simple **baselines** (constant, majority-class, heuristic) to KPI.
   If a baseline already beats the target KPI, challenge the need for ML.
 
 ---
 
-### 4 Sketch the End-to-End Flow on One Whiteboard
+### 4 · Scope & Deliverables (one-pager)
+
+| Section          | Example entry (fill in)                                      |
+| ---------------- | ------------------------------------------------------------ |
+| **In-scope**     | Web-app customers, last 2 years of activity logs             |
+| **Out-of-scope** | Mobile-app only users, customer-support notes                |
+| **Deliverables** | ① Trained model artifact<br>② Inference API spec<br>③ README |
+| **Timeline**     | 12 weeks (M1-M3), pilot rollout in Q4                        |
+
+---
+
+### 5 · SMART Success Criteria & Metrics
+
+| Category         | Target metric & threshold | Why this metric?                             |
+| ---------------- | ------------------------- | -------------------------------------------- |
+| **Primary**      | ROC-AUC ≥ 0.85            | Class-imbalance; need good ranking power     |
+| **Secondary**    | F1 ≥ 0.75                 | Balance precision & recall for interventions |
+| **Business KPI** | ↓ churn rate by 15 %      | Direct financial impact                      |
+
+> **Justify the metric**: ROC-AUC is threshold-independent and robust for
+> imbalanced data; F1 captures the harmonic mean of precision & recall which
+> suits the “find true churners” objective.
+
+---
+
+### 6 · Baseline Expectation
+
+> Current heuristic = _always predict “no churn”_  
+> → Accuracy ≈ 75 %, F1 ≈ 0.00, ROC-AUC ≈ 0.50  
+> Our ML model **must beat this baseline** on the hold-out set to be worthwhile.
+
+---
+
+### 7 · Sketch the End-to-End Flow on One Whiteboard
 
 ```mermaid
 flowchart LR
@@ -180,7 +219,9 @@ flowchart LR
     F -->|trigger| B
 ```
 
-### 5 Problem-Clarity **Exit Checklist**
+---
+
+### 8 Problem-Clarity ✅ **Exit Checklist**
 
 _(all boxes must be ticked before Phase 2 – Data Collection – may start)_
 
@@ -192,7 +233,6 @@ _(all boxes must be ticked before Phase 2 – Data Collection – may start)_
 - [ ] **Primary success metric** & numeric threshold agreed – “F1 ≥ 0.82 on Q4 hold-out”
 - [ ] **Constraints & assumptions** captured (latency, region, budget, feature-freeze date)
 - [ ] **High-level ethical / bias risks** listed (sensitive attributes, exclusion harms)
-- [ ] **Regulatory touch-points** identified (GDPR/CCPA, sector rules)
 - [ ] **Baseline approach** written down (random or simple heuristic score)
 - [ ] **All items reviewed & signed off** (attach link in project tracker)
 
@@ -200,66 +240,87 @@ _(all boxes must be ticked before Phase 2 – Data Collection – may start)_
 > **“Phase-1 Complete – proceed to Data Collection”** and assign it to the team lead.  
 > Only then move on to Phase-2.
 
-## 2 — Phase 2 · Data Collection<a name="2-phase-2--data-collection"></a>
+---
 
-> **Goal** — pull data from _any_ source, stamp it with lineage, mask PII, and
-> persist an immutable snapshot in `data/raw/` that DVC (or LakeFS) can track.
-> The heavy lifting is baked into **[`OmniCollector`](src/data_ingest/data_collector.py)**;
-> the subsections below show how each channel maps to one collector method,
-> plus security/gov-hooks you should enable in production.
+## 2 — Phase 2 · **Data Collection & Initial Validation**<a name="2-phase-2--data-collection"></a>
+
+> **Goal** — pull tabular data from _any_ source, redact obvious PII,  
+> version the raw snapshot in `data/raw/`, **and fail-fast** if the feed violates
+> basic quality expectations.  
+> Everything is orchestrated by **[`OmniCollector`](src/Data%20Ingestion/data_collector.py)**  
+> (the “one ring” in Phase-2).  
+> When the collector finishes it hands a Parquet file to Phase-3 and writes an
+> audit-trail line to `logs/ingest.log`.
+
+### 2·0 What happens under the hood 🛠
+
+1. **Download / query / consume** via one of `OmniCollector.from_*` channels
+2. **Regex PII scrub** (email & phone) → _Data Privacy Hook_
+3. **Great Expectations suite** runs (schema, non-null %, range checks, etc.)
+   - Fails the pipeline if any _critical_ expectation is violated
+4. **SHA-256 & row-count** logged to `logs/ingest.log`
+5. Snapshot saved to `data/raw/…` and git-/DVC-tracked
+
+> Copy `great_expectations/expectations/sample_suite.yml` and tailor it to your
+> dataset; the default checks only shape & non-null counts.
 
 ---
 
 ### 2A Flat-Files & Object Storage<a name="2a-flat-files--object-storage"></a>
 
-| Format                    | Example call                                         | Notes                                                       |
-| ------------------------- | ---------------------------------------------------- | ----------------------------------------------------------- |
-| **CSV / TSV**             | `oc.from_file("data/raw/users.csv")`                 | Auto-detects delimiter.                                     |
-| **Excel**                 | `oc.from_file("marketing.xlsx")`                     | Supports multiple sheets (`pd.read_excel(sheet_name=...)`). |
-| **Parquet / ORC / Avro**  | `oc.from_file("events.parquet")`                     | Requires `pyarrow`.                                         |
-| **S3 / GCS / Azure Blob** | `oc.from_file("s3://my-bkt/2025/05/events.parquet")` | Pass `storage_options` → KMS, STS, IAM role.                |
-| **ZIP / TAR**             | `oc.from_file("archive.zip")`                        | Auto-extracts first file if single-member.                  |
+| Format / Location         | Collector call                                    | Notes                                       |
+| ------------------------- | ------------------------------------------------- | ------------------------------------------- |
+| **CSV / TSV**             | `oc.from_file("data/raw/users.csv")`              | Auto-delimiter / Pandas dtype inference     |
+| **Excel**                 | `oc.from_file("marketing.xlsx")`                  | Multi-sheet supported                       |
+| **Parquet / ORC / Avro**  | `oc.from_file("events.parquet")`                  | Needs **pyarrow**                           |
+| **S3 / GCS / Azure Blob** | `oc.from_file("s3://bucket/path/events.parquet")` | IAM role / KMS handled by `storage_options` |
+| **ZIP / TAR**             | `oc.from_file("archive.zip")`                     | Auto-extract if single-member archive       |
 
 _Governance_: set bucket-policy to SSE-KMS, use **least-privilege IAM**; the
 collector runs regex-based email/phone redaction before snapshot-save.
 
 ---
 
-### 2B Relational Databases<a name="2b-relational-databases"></a>
+### 2B Relational DBs<a name="2b-relational-databases"></a>
 
 ```python
-dsn   = "postgresql+psycopg2://ml_user:${PG_PWD}@pg-ro.acme.local:5432/warehouse"
-query = "SELECT uid, age, churn_flag, ts FROM analytics.users WHERE ts >= NOW()-INTERVAL '90 days'"
-df    = oc.from_sql(dsn, query)
+dsn   = "postgresql+psycopg2://ml_user:${PG_PWD}@pg-ro.acme.local/warehouse"
+query = """
+SELECT uid, age, is_churn, updated_at
+FROM   analytics.users
+WHERE  updated_at >= CURRENT_DATE - INTERVAL '90 days'
+"""
+df = oc.from_sql(dsn, query)
 ```
 
-_Extras_:
-
-- parameterised queries to avoid SQLi
-- use **read-only replica endpoints**
-- column-level encryption with pgcrypto (Postgres) or TDE (MySQL 8+)
+_Parameterised queries_ avoid SQL-i, and read-only replicas protect prod.
 
 ---
 
-### 2C NoSQL & Analytical Stores<a name="2c-nosql--analytical-stores"></a>
+### 2C NoSQL / Analytical Stores<a name="2c-nosql--analytical-stores"></a>
 
 ```python
-df = oc.from_mongo("mongodb://ro_user:${MONGO_PWD}@mongo-ro:27017",
-                   db="crm", coll="events",
-                   query={"ts": {"$gte": "2025-01-01"}})
+df = oc.from_mongo(
+        uri="mongodb://ro_user:${MONGO_PWD}@mongo-ro:27017",
+        db="crm", coll="events",
+        query={"updated_at": {"$gte": "2025-01-01"}}
+)
 ```
 
-BigQuery & Snowflake are available via `oc.from_sql(...)`
-because they expose JDBC/SQLAlchemy drivers.
+(BigQuery & Snowflake use `from_sql` via SQLAlchemy drivers.)
 
 ---
 
 ### 2D APIs & Web Scraping<a name="2d-apis--web-scraping"></a>
 
 ```python
-df_fx = oc.from_rest("https://api.exchangerate.host/latest",
-                     params={"base": "USD"})
+df_fx = oc.from_rest(
+          "https://api.exchangerate.host/latest",
+          params={"base": "USD"}
+)
 ```
+
+Scraping? Use `BeautifulSoup` or Playwright, then `oc.save(df, "source_name")`.
 
 If you must scrape:
 
@@ -272,27 +333,28 @@ oc.save(price_df, "price_table")
 
 _Security_: respect robots.txt, user-agent throttling, rotate tokens.
 
----
-
-### 2E Streaming / Message Queues<a name="2e-streaming--message-queues"></a>
+### 2E Streams / Message Queues<a name="2e-streaming--message-queues"></a>
 
 ```python
-# Consume the last 100 Kafka messages (JSON) without committing offsets
-stream_df = oc.from_kafka(topic="tx-events",
-                          bootstrap="kafka-broker:9092",
-                          batch=100, group_id="omni-probe")
+stream_df = oc.from_kafka(
+               topic="tx-events",
+               bootstrap="broker:9092",
+               batch=1_000,
+               group_id="ingest-probe"
+)
 ```
 
-_Checkpointing_: commit offsets only after `oc.save()` succeeds,
-so failed runs can re-process safely.
+Offsets committed **after** `oc.save()` ➜ at-least-once semantics.
 
 ---
 
-### 2F SaaS & Cloud-Native Connectors<a name="2f-saas--cloud-native-connectors"></a>
+### 2F SaaS / Cloud-Native<a name="2f-saas--cloud-native-connectors"></a>
 
 ```python
-df_sheet = oc.from_gsheet(sheet_key=os.getenv("GSHEET_ID"),
-                          creds_json="gcp-sa.json")
+df_sheet = oc.from_gsheet(
+              sheet_key=os.getenv("GSHEET_ID"),
+              creds_json="gcp-sa.json"
+)
 ```
 
 Need HubSpot, Stripe, Salesforce?
@@ -303,12 +365,14 @@ Either:
 
 ---
 
-### 2G Sensors & IoT Ingestion<a name="2g-sensors--iot"></a>
+### 2G Sensors & IoT<a name="2g-sensors--iot"></a>
 
 ```python
-iot_df = oc.from_mqtt(broker="192.168.1.50",
-                      topic="factory/line1/#",
-                      timeout=10)         # seconds to listen
+iot_df = oc.from_mqtt(
+            broker="192.168.1.50",
+            topic="factory/line1/#",
+            timeout=10
+)
 ```
 
 Store raw telemetry uncompressed → `Parquet+ZSTD` later in an Apache Iceberg or
@@ -316,12 +380,11 @@ TimescaleDB bucket for long-term analytics.
 
 ---
 
-### 2H Data Privacy & Governance Hooks<a name="2h-data-privacy--governance-hooks"></a>
+### 2H Data-Privacy & Governance Hooks<a name="2h-data-privacy--governance-hooks"></a>
 
-- Built-in regex scrub for **emails** and **phone numbers**
-- Extend `_mask()` to hash SSNs, tokenize names (use Bloom filter / format-preserving encryption).
-- Tag snapshots with `dataset`, `source_system`, and `sensitivity` in DVC
-  (`dvc params`) for future lineage queries.
+- Regex redaction for emails & phone numbers (`_mask`)
+- Extendable: plug your own `re` patterns or FPE tokenisers
+- Lineage tags stored alongside the Parquet metadata (`dataset`, `source_system`, `run_id`)
 
 ---
 
@@ -334,32 +397,45 @@ Every collector call:
 3. **source label**
 4. UTC timestamp
 
-is appended to `logs/ingest.log`, e.g.
+Each ingest line in `logs/ingest.log`:
 
 ```
-2025-05-30T23:14:09 | INFO | flat:events.parquet  | rows= 104 876 | sha256=7b12e0f83e01
+2025-05-30T22:14:09Z | INFO | flat:events.parquet | rows=104 876 | sha256=7b12e0f83e01
 ```
 
-Use this file plus DVC commit history for a tamper-evident audit trail.
+This + the DVC commit = tamper-evident audit trail.
 
 ---
 
-### 🔧 Quick-Start Recap
+### 🔧 Quick-Start
 
 ```bash
-# install in editable mode
-pip install -e .
+# ① install core + sqlalchemy + great_expectations
+pip install -e .[ingest,sql,ge]
 
-# CLI one-liner pulls CSV and snapshots into data/raw/
+# ② pull CSV snapshot
 omni-collect file data/raw/users.csv
 
-# REST example
-omni-collect rest https://api.exchangerate.host/latest
+# ③ check the log & Great Expectations report (html in great_expectations/…)
 ```
 
-`omni-collect` is defined in `pyproject.toml` under `[project.scripts]`
-and implemented in **`src/data_ingest/omni_cli.py`**, which wraps the
-same `OmniCollector` methods shown above.
+---
+
+### 📌 Why the extra validation step?
+
+1. **Fail-fast** – bad schemas blow up here, not during model training
+2. **Confidence for 50 k engineers** – everyone inherits a baseline of QA
+3. **CI-friendly** – the GE suite runs in GitHub Actions so broken feeds block the PR
+
+If you need stricter checks (e.g. “< 5 % nulls in `age`”), edit
+`great_expectations/expectations/sample_suite.yml`.
+
+---
+
+> **Next phase ➜ [Data Preparation](#3-phase-3--data-preparation)**
+> You now have an immutable, validated snapshot ready for cleaning & scaling.
+
+---
 
 ## 3 — Phase 3 · **Data Preparation**<a name="3-phase-3--data-preparation"></a>
 
@@ -374,13 +450,21 @@ same `OmniCollector` methods shown above.
 
 ### 3A Schema Validation & Data Types<a name="3a-schema-validation--data-types"></a>
 
-| Tool          | What it does                                              | Where                                |
-| ------------- | --------------------------------------------------------- | ------------------------------------ |
-| **Pandera**   | enforce column names, dtypes, value ranges, allowed enums | `schema = pa.DataFrameSchema({...})` |
-| **pyjanitor** | snake-cases column names (`df.clean_names()`)             | first line of `load_and_validate()`  |
+| Tool                        | What it does                                              | Where                                |
+| --------------------------- | --------------------------------------------------------- | ------------------------------------ |
+| **Pandera**                 | enforce column names, dtypes, value ranges, allowed enums | `schema = pa.DataFrameSchema({...})` |
+| **pyjanitor**               | snake-cases column names (`df.clean_names()`)             | first line of `load_and_validate()`  |
+| Data-quality tests (opt-in) | `great_expectations` (`--gx`)                             | `dq_validate()`                      |
 
 **Why:** catch bad upstream changes early; guarantee downstream code never
 breaks on dtype surprises.
+
+---
+
+### 3B.1 De-duplication & Invariant Pruning <a name="3b1-dedup"></a>
+
+- `--dedup uid` → drops perfect-duplicate _rows_.
+- `--prune-const 0.99` → removes columns where one value ≥ 99 %.
 
 ---
 
@@ -388,6 +472,13 @@ breaks on dtype surprises.
 
 _Default_: median (numeric) + mode (categorical).
 _Optional_: `--knn` flag enables **`KNNImputer`** (k=5).
+
+| Technique      | Flag              | Notes                                |
+| -------------- | ----------------- | ------------------------------------ |
+| Median / Mode  | _(default)_       | fast & deterministic                 |
+| **KNNImputer** | `--knn`           | non-linear numeric guess             |
+| Drop column    | `--drop-miss 0.4` | removes any feature with > 40 % NaNs |
+| Drop row       | `--drop-miss 0.4` | removes any row with > 40 % NaNs     |
 
 ```bash
 python -m ml_pipeline.prepare --knn      # fancy impute
@@ -399,11 +490,12 @@ _Diagnostics:_ generates a `missingno.matrix` plot for the first 1 000 rows.
 
 ### 3C Outlier Detection & Treatment<a name="3c-outlier-detection--treatment"></a>
 
-| Method           | Flag                      | Notes                          |                    |                            |
-| ---------------- | ------------------------- | ------------------------------ | ------------------ | -------------------------- |
-| IQR fence (1.5×) | `--outlier iqr` (default) | quick & interpretable          |                    |                            |
-| Z-score (        | z                         | < 3)                           | `--outlier zscore` | good for gaussian-ish data |
-| Isolation Forest | `--outlier iso`           | detects multivariate anomalies |                    |                            |
+| Method             | Flag                      | Notes                          |                    |                            |
+| ------------------ | ------------------------- | ------------------------------ | ------------------ | -------------------------- |
+| IQR fence (1.5×)   | `--outlier iqr` (default) | quick & interpretable          |                    |                            |
+| Z-score (          | z                         | < 3)                           | `--outlier zscore` | good for gaussian-ish data |
+| Isolation Forest   | `--outlier iso`           | detects multivariate anomalies |                    |                            |
+| Local Outlier Fac. | `--outlier lof`           | cluster-shaped data            |
 
 ---
 
@@ -453,6 +545,15 @@ pin-point exactly which prep config & raw snapshot produced it.
 
 ---
 
+### 3G Feature Pruning (High NaN / High Corr) <a name="3g-prune"></a>
+
+- **NaN threshold** `--drop-miss p` → prune if NaNs > p
+- **Corr threshold** `--drop-corr 0.95` → greedily drop highly-correlated pair
+
+Manifest of drops saved to `reports/lineage/prune_log.json`.
+
+---
+
 ### 🔧 Quick-Start Cheat-Sheet
 
 ```bash
@@ -469,13 +570,20 @@ python -m ml_pipeline.prepare \
 
 ## 4 — Phase 4 · **Exploratory Data Analysis (EDA)**<a name="4-phase-4--exploratory-data-analysis"></a>
 
-> Two Python scripts power this phase:
+> **Goal** — get a _holistic view_ of the dataset, its distributions, relationships,
+> and potential issues.
+> This phase is orchestrated by **[`EDA.py`](src/Data%20Analysis/EDA.py)**, which
+> reads the pre-processed data from `data/interim/clean.parquet` (output of Phase-3)
+> and writes all artefacts to `reports/eda/`.
 >
-> - **[`EDA.py`](src/Data%20Analysis/EDA.py)** – core stats & plots (4A-4C)
-> - **[`EDA_advance.py`](src/Data%20Analysis/EDA_advance.py)** – deep-dive add-ons (4D)
->
-> Both read the interim parquet produced by Phase-3 (`data/interim/clean.parquet`)  
-> and populate `reports/eda/…` with CSV summaries, PNGs, and manifests that
+> - **[`EDA.py`](src/Data Analysis/EDA.py)** – univariate, bivariate, multivariate,
+>   target-aware imbalance, leakage flags, optional HTML profile.
+> - **[`EDA_advance.py`](src/Data Analysis/EDA_advance.py)** – still available for
+>   very heavy add-ons (UMAP, t-SNE, time-series seasonality, etc.).
+
+Both scripts read `data/interim/clean.parquet` (output of Phase-3) and write to
+`reports/eda/`.
+
 > downstream notebooks (or model cards) can embed.
 
 ---
@@ -485,9 +593,9 @@ python -m ml_pipeline.prepare \
 | Metric / Test                                                         | Implementation                     | Output artefact                                         |
 | --------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------- |
 | mean, median, variance, std, skew, kurt                               | `df.amount.agg([...])`             | `reports/eda/univariate_summary.csv`                    |
-| IQR                                                                   | `q3 - q1`                          | same CSV                                                |
+| skew · kurt · IQR                                                     | `Series.skew()                     | kurt()`                                                 |
 | Normality: Shapiro–Wilk, D’Agostino K², Jarque–Bera, Anderson–Darling | `scipy.stats`                      | CSV columns `shapiro_p`, `dagostino_p`, `jb_p`          |
-| Outliers flag                                                         | Z-score / IQR fence, density plot  | embedded inside PNGs                                    |
+| Normality p-values                                                    | Shapiro, D’Agostino, Jarque–Bera   | columns `shapiro_p`, `dagostino_p`, `jb_p`              |
 | Visuals                                                               | Histogram + KDE, box-plot, QQ-plot | one PNG per numeric feature in `reports/eda/uva/plots/` |
 
 > **Run only this section**
@@ -500,37 +608,54 @@ python -m ml_pipeline.prepare \
 
 ### 4B Bivariate Tests & Visuals<a name="4b-bivariate-tests--visuals"></a>
 
-| Pair Type       | Parametric | Non-Parametric        | Effect-size |
-| --------------- | ---------- | --------------------- | ----------- |
-| num-num         | Pearson r  | Spearman ρ, Kendall τ | `r²`        |
-| num vs 2 groups | Welch-t    | Mann–Whitney U        | Cohen’s d   |
-| num vs k groups | ANOVA      | Kruskal–Wallis        | η²          |
-| cat-cat         | χ²         | Fisher exact (2×2)    | Cramer V    |
+| Pair Type        | Parametric                         | Non-Parametric        | Effect-size      |
+| ---------------- | ---------------------------------- | --------------------- | ---------------- |
+| num-num          | Pearson r                          | Spearman ρ, Kendall τ | `r²`,joint-plots |
+| num vs 2 groups  | Welch-t                            | Mann–Whitney U        | Cohen’s d        |
+| num vs k groups  | ANOVA                              | Kruskal–Wallis        | η²               |
+| cat-cat          | χ²                                 | Fisher exact (2×2)    | Cramer V         |
+| num ↔ num        | Pearson r · Spearman ρ · Kendall τ | optional              |
+| num ↔ binary tgt | Point-Biserial r                   | effect-size in CSV    |
+| num ↔ multi tgt  | Pearson r                          |
 
 - **Joint-plot regressions** and **correlation heat-map** saved to  
   `reports/eda/bva/plots/`.
 - Results table → `bivariate_summary.csv`.
 
+Correlation heat-map & individual regressions are generated only when
+`--pairplots` is passed.
+
 ```bash
-python -m Data_Analysis.EDA --mode bva
+python -m Data_Analysis.EDA --mode bva --target is_churn --pairplots
 ```
 
 ---
 
 ### 4C Multivariate Tests & Diagnostics<a name="4c-multivariate-tests--diagnostics"></a>
 
-| Goal                   | Test / Tool             | File / Visual         |
-| ---------------------- | ----------------------- | --------------------- |
-| Multicollinearity      | VIF                     | `vif.csv`             |
-| Multivariate normality | **Mardia** P-val < 0.05 | `mva_summary.json`    |
-| Overall association    | MANOVA (Pillai’s Trace) | printed to console    |
-| Dimensionality         | PCA scree ≥ 90 %        | `pca_scree.png`       |
-| Cluster tendency       | Hopkins statistic       | manifest              |
-| Heteroscedasticity     | Breusch–Pagan           | manifest              |
-| Correlation dendrogram | seaborn `clustermap`    | `corr_dendrogram.png` |
+| Goal                   | Test / Tool                     | File / Visual                 |
+| ---------------------- | ------------------------------- | ----------------------------- |
+| Multi-collinearity     | max **VIF** across features     | `vif.csv`, `mva_summary.json` |
+| Multivariate normality | **Mardia** P-val < 0.05         | `mva_summary.json`            |
+| Overall association    | MANOVA (Pillai’s Trace)         | printed to console            |
+| Dimensionality         | PCA scree ≥ 90 %                | `pca_scree.png`               |
+| Cluster tendency       | **Hopkins** statistic           | `mva_summary.json`            |
+| Heteroscedasticity     | **Breusch–Pagan** p-value       | `mva_summary.json`            |
+| Correlation dendrogram | seaborn `clustermap`            | `corr_dendrogram.png`         |
+| Leakage guard          | AUC ≈ 1 features → flagged JSON | `leakage_flags.json`          |
+
+- **VIF**: Variance Inflation Factor, max VIF > 10 → multicollinearity
+- **Mardia**: tests multivariate normality; p-value < 0.05 → reject H0
+- **Hopkins**: tests cluster tendency; H0 = uniform distribution, H1 = clustering
+- **Breusch–Pagan**: tests heteroscedasticity; p-value < 0.05 → reject H0
+- **Dendrogram**: visualizes correlation structure; clusters of features
+- **Leakage guard**: checks for future-timestamp overlap; flags features with AUC ≈ 1
+- **PCA scree**: plots explained variance by components; helps decide dimensionality
+- **MANOVA**: multivariate analysis of variance; checks if group means differ significantly
+- **Pair-plots**: scatter matrix of numeric features, colored by target class
 
 ```bash
-python -m Data_Analysis.EDA --mode mva
+python -m Data_Analysis.EDA --mode mva --target is_churn
 ```
 
 ---
@@ -579,41 +704,52 @@ reports/
 
 ---
 
-## 🆕 Phase 5·½ — **Dataset Partition & Baseline Benchmarking**<a name="5.5-phase-split-baseline"></a>
-
-> _Glue_ between Feature-Eng and Model-Design.
-> Freezes splits, prevents leakage, and sets a “beat-that” baseline.
-
-| Sub-step                          | Goal                                             | Artefact                                                       |
-| --------------------------------- | ------------------------------------------------ | -------------------------------------------------------------- |
-| **5·0 Train / Val / Test Split**  | Comparable, leak-free splits                     | `data/splits/{train,val,test}.parquet` + `split_manifest.json` |
-| **5·1 Stratification / Grouping** | Keep class balance / group integrity             | inside **`split_and_baseline.py`**                             |
-| **5·2 Baseline Model(s)**         | Majority-class, mean regressor, etc.             | `reports/baseline/baseline_metrics.json`                       |
-| **5·3 Sanity Checks**             | Duplicate IDs, leakage heuristics, feature-drift | pytest or notebook—pipeline fails if violated                  |
-| **5·4 Data-Pipeline Freeze**      | Persist the fitted pre-processor                 | `models/preprocessor.joblib`                                   |
-
-When every box passes, open issue **“Phase 5·½ Complete → start Model Design.”**
-
-### 📜 Code Location
-
-`src/Data Cleaning/split_and_baseline.py` – one class **`SplitAndBaseline`** with
-`fit → split → baseline → checks → freeze` in a single call.
+### 🛠 CLI Cheat-Sheet
 
 ```bash
-# run end-to-end
-python -m Data_Cleaning.split_and_baseline \
-       --target is_churn --stratify --seed 42
+# lightweight (stats only)
+python -m Data_Analysis.EDA --target is_churn
+
+# full deep-dive with pair-plots + HTML profile
+python -m Data_Analysis.EDA \
+       --target is_churn \
+       --pairplots \
+       --profile
 ```
 
-The script:
+---
 
-1. Loads `data/processed/scaled.parquet`
-2. Creates deterministic splits (stratified if flagged)
-3. Saves baseline metrics
-4. Fails fast on duplicates / leakage
-5. Dumps the SHA-stamped `preprocessor.joblib` manifest
+## 4·½. [Feature Selection & Early Train/Test Split](#4.5-phase-feature-select-split)
 
-> **Exit criterion**: teammate can `make baseline` on a fresh clone and reproduce the metrics within ±0.01.
+> **Why here?** Any statistic that _uses_ the target (variance filter,  
+> mutual-information, Cramer-V, leakage sniff, etc.) must be learned on
+> **training rows only**.  
+> Therefore we:
+>
+> 1. **Split once — right now** (80 / 20 stratified by `target`  
+>    or `--time-split` if temporal).
+> 2. **Fit feature filters on _train_**, replay them on _val_ / _test_.
+>    | Sub-step | Purpose | Script | Artefact |
+>    | --------------------------- | ------------------------------------- | --------------------- | --------------------------------------------- |
+>    | **4·½·0 Split** | Freeze leak-free `train / val / test` | `feature_selector.py` | `data/splits/*.parquet` `split_manifest.json` |
+>    | **4·½·1 Low-variance drop** | remove near-constant cols | ″ | logged in manifest |
+>    | **4·½·2 Target filter** | MI / chi² < threshold | ″ | `"kept","dropped"` lists |
+>    | **4·½·3 Collinearity** | drop one of pairs with ρ > 0.95 | ″ | correlation heatmap |
+>    | **4·½·4 Save plan** | Column lists for next phases | `"feature_plan.json"` |
+
+```bash
+ # full run – stratified split, MI filter @ 0.001, corr prune @ 0.95
+ python -m Data_Analysis.feature_selector \
+    --target is_churn \
+    --mi-thresh 0.001 \
+    --corr-thresh 0.95 \
+    --seed 42
+```
+
+**Exit checklist** _ ✅ `data/splits/train.parquet` & `test.parquet` exist  
+ _ ✅ `feature_plan.json` lists “keep” & “drop” columns  
+ _ ✅ No feature on the **drop list** is referenced downstream  
+ _ ✅ Issue **“Phase 4·½ Complete → start Phase 5 FE”** created
 
 ---
 
@@ -625,7 +761,7 @@ The script:
 
 ---
 
-### 5·A Menu of Built-in Options
+### 5·A Menu of Built-in Options<a name="5-phase-5--feature-engineering"></a>
 
 | Category                  | Turn on with ⇢                                                                | Notes                           |
 | ------------------------- | ----------------------------------------------------------------------------- | ------------------------------- | ------------------------------- | ------ | ------ | -------- | ------ | ------------------------- |
@@ -752,3 +888,52 @@ _Guidelines_
 
 > Once your custom step is serialised inside `preprocessor.joblib`, every model
 > in Phase 6 will use it automatically—no extra code paths to maintain.
+
+## 🆕 Phase 5·½ — **Baseline Benchmarking & & Pre-Processor Freeze** <a name="5.5-phase-baseline-freeze"></a>
+
+> _Glue_ between **Feature Engineering** and **Model Design**.  
+> Freezes deterministic splits, prevents leakage, and sets a “beat-that” baseline.
+
+| Sub-step                          | Goal                                                        | Artefact(s)                                                    |
+| --------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------- |
+| **5·0 Train / Val / Test Split**  | Comparable, leak-free folds                                 | `data/splits/{train,val,test}.parquet` + `split_manifest.json` |
+| **5·1 Stratification / Grouping** | Preserve class proportions or entity boundaries             | implemented inside **`split_and_baseline.py`**                 |
+| **5·2 Baseline Model(s)**         | Majority-class, mean regressor, or random ranker            | `reports/baseline/baseline_metrics.json`                       |
+| **5·3 Sanity Checks**             | Duplicate-row catch, leakage sniff, feature-drift check     | pipeline aborts on failure                                     |
+| **5·4 Data-Pipeline Freeze**      | Persist the _fitted_ pre-processor used to build the splits | `models/preprocessor.joblib` + `preprocessor_manifest.json`    |
+
+#### 📜 Code location
+
+`src/Data Cleaning/split_and_baseline.py` – single class **`SplitAndBaseline`**
+(`fit → split → baseline → checks → freeze`).
+
+```bash
+# run end-to-end
+python -m Data_Cleaning.split_and_baseline \
+       --target is_churn \
+       --stratify \
+       --seed 42
+
+```
+
+```mermaid
+flowchart TD
+    A[0 · LOAD<br>processed.parquet] --> B[1 · STRAT / SPLIT]
+    B --> C[2 · BASELINE<br>majority / mean]
+    C --> D[3 · SANITY CHECKS]
+    D --> E[4 · FREEZE PREPROCESSOR<br>+ SHA manifest]
+```
+
+The script:
+
+1. Loads **`data/processed/scaled.parquet`**
+2. Creates deterministic splits (stratified if flagged)
+3. Computes & stores baseline metrics
+4. Runs fast-fail leakage / duplication checks
+5. Saves a SHA-stamped `preprocessor.joblib` + manifest
+
+> **Exit criterion:** anyone can clone the repo, run `make baseline`,
+> and reproduce the metrics within **± 0.01**.
+> If the script fails, fix the issues before proceeding to Phase 6.
+
+---
