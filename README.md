@@ -137,67 +137,6 @@ battle-tested structure instead of an empty folder.
 
 ---
 
-## Getting Started
-
-| Directory / File         | What lives inside                                                     |
-| ------------------------ | --------------------------------------------------------------------- |
-| `data/`                  | **raw → interim → processed** snapshots (all DVC-tracked)             |
-| `docs/`                  | auto-generated artefacts e.g. **feature dictionary**                  |
-| `reports/`               | plots, metrics, lineage manifests                                     |
-| `models/`                | frozen pre-processors, baseline models, MLflow artefacts              |
-| `src/`                   | source code, grouped by ML phase                                      |
-| `dvc.yaml + params.yaml` | declarative pipeline & hyper-parameters                               |
-| `pyproject.toml`         | installable package metadata – `pip install -e .` makes CLI available |
-
-### 1. Clone & bootstrap
-
-```bash
-git clone <this-repo> ; cd mldlc
-python -m venv .venv && source .venv/bin/activate   # or conda/mamba
-pip install -e .[dev]                               # brings deps + extras
-dvc pull                                            # pulls example data (if remote set)
-```
-
-### 2. Reproduce the entire pipeline
-
-```bash
-dvc repro                                           # runs every stage once
-```
-
-> Need only a subset? Append the stage name – e.g. `dvc repro prepare`
-> (`dvc stage list` shows them all).
-
-### 3. Tweak parameters & iterate
-
-```bash
-vim params.yaml                                     # change any flag
-dvc exp run                                         # launches a new experiment
-dvc exp diff                                        # shows metric deltas
-dvc exp push -r origin                              # share results with the team
-```
-
-### 4. One-shot phase runs (skip DVC)
-
-```bash
-# Phase-2 : collect data
-omni-collect file data/raw/users.csv --redact-pii --save
-
-# Phase-3 : prepare with custom flags
-python -m Data_Cleaning.data_preparation --knn --outlier iso --scaler robust
-
-# Phase-4 : full EDA profile
-python -m Data_Analysis.EDA --mode all --target is_churn --profile
-```
-
-### 5. Cleaning up work files
-
-```bash
-dvc gc -w               # remove unused data/artefacts in current workspace
-rm -rf .venv            # nuke the virtual-env if you need a fresh start
-```
-
----
-
 ## 1 — Phase 1 · Problem Definition<a name="1-phase-1--problem-definition"></a>
 
 > **Goal** — crystallise a fuzzy idea into an _implementable, testable and
@@ -310,5 +249,56 @@ _(all boxes must be ticked before Phase 2 – Data Collection – may start)_
 > When the table is fully checked, create an issue titled  
 > **“Phase-1 Complete – proceed to Data Collection”** and assign it to the team lead.  
 > Only then move on to Phase-2.
+
+---
+
+## Getting Started
+
+### 1. Clone & bootstrap
+
+```bash
+git clone <this-repo> ; cd mldlc
+python -m venv .venv && source .venv/bin/activate   # or conda/mamba
+pip install -e .[dev]                               # brings deps + extras
+dvc pull                                            # pulls example data (if remote set)
+```
+
+### 2. Reproduce the entire pipeline
+
+```bash
+dvc repro                                           # runs every stage once
+```
+
+> Need only a subset? Append the stage name – e.g. `dvc repro prepare`
+> (`dvc stage list` shows them all).
+
+### 3. Tweak parameters & iterate
+
+```bash
+vim params.yaml                                     # change any flag
+dvc exp run                                         # launches a new experiment
+dvc exp diff                                        # shows metric deltas
+dvc exp push -r origin                              # share results with the team
+```
+
+### 4. One-shot phase runs (skip DVC)
+
+```bash
+# Phase-2 : collect data
+omni-collect file data/raw/users.csv --redact-pii --save
+
+# Phase-3 : prepare with custom flags
+python -m Data_Cleaning.data_preparation --knn --outlier iso --scaler robust
+
+# Phase-4 : full EDA profile
+python -m Data_Analysis.EDA --mode all --target is_churn --profile
+```
+
+### 5. Cleaning up work files
+
+```bash
+dvc gc -w               # remove unused data/artefacts in current workspace
+rm -rf .venv            # nuke the virtual-env if you need a fresh start
+```
 
 ---
