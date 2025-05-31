@@ -60,9 +60,9 @@ hard bot
 656a3bb926ad29ef1b909f06
 656b8a77ec77e3baba47aef7
 656b8a7dec77e3baba47af23
-Joao Neves
-Harry Kane
-Matz Sels
-David Raya
-Alisson Becker
-Scott Mctominay
+66c397450717001c33923716
+656a3b2426ad29ef1b909d16
+656b8a99ec77e3baba47afd7
+656a3da19ceef8ec4252af21
+656a3d8a9ceef8ec4252aed9
+656a3c6a26ad29ef1b90a144
