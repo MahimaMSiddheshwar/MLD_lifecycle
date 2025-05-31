@@ -8,21 +8,21 @@
 
 ### 5·A Menu of Built-in Options<a name="5-phase-5--feature-engineering"></a>
 
-| Category                  | Turn on with ⇢                                                                | Notes                           |
-| ------------------------- | ----------------------------------------------------------------------------- | ------------------------------- | ------------------------------- | ------ | ------ | -------- | ------ | ------------------------- |
-| Numeric scalers           | `numeric_scaler="standard                                                     | minmax                          | robust                          | maxabs | normal | quantile | none"` |                           |
-| Power / log               | `numeric_power="yeo                                                           | boxcox                          | quantile"`·`log_cols=["price"]` |        |
-| Binning                   | `quantile_bins={"age":4}` or `binning={"age":{"bins":5,"strategy":"kmeans"}}` |                                 |
-| Polynomial & interactions | `polynomial_degree=2` · `interactions=True`                                   |                                 |
-| Rare grouping             | `rare_threshold=0.01 # 1 %`                                                   | merges into `__rare__`          |
-| Cat encoders              | `cat_encoder="onehot                                                          | ordinal                         | target                          | woe    | hash   | freq     | none"` | Target/WOE need `target=` |
-| Text vecs                 | `text_vectorizer="tfidf                                                       | count                           | hashing"`·`text_cols=[…]`       |        |
-| Datetime expand           | `datetime_cols=[…]`                                                           | Y/M/D/DOW/HR                    |
-| Cyclical sin–cos          | `cyclical_cols={"month":12,"dow":7}`                                          |                                 |
-| Date deltas               | `date_delta_cols={"signup":"today"}`                                          | days-since                      |
-| Aggregations              | `aggregations={"cust_id":["amt_mean","amt_sum"]}`                             | group-by roll-ups               |
-| SMOTE                     | `sampler="smote"`                                                             | oversample during **fit**       |
-| Custom plug-ins           | `custom_steps=[my_func]`                                                      | any `pd.DataFrame→pd.DataFrame` |
+| Category                      | Turn on with ⇢                                                                | Notes                           |
+| ----------------------------- | ----------------------------------------------------------------------------- | ------------------------------- | ------------------------------- | ------ | ------ | -------- | ------ | ------------------------- |
+| **Numeric scalers**           | `numeric_scaler="standard                                                     | minmax                          | robust                          | maxabs | normal | quantile | none"` |                           |
+| **Power / log**               | `numeric_power="yeo                                                           | boxcox                          | quantile"`·`log_cols=["price"]` |        |
+| **Binning**                   | `quantile_bins={"age":4}` or `binning={"age":{"bins":5,"strategy":"kmeans"}}` |                                 |
+| **Polynomial & interactions** | `polynomial_degree=2` · `interactions=True`                                   |                                 |
+| **Rare grouping**             | `rare_threshold=0.01 # 1 %`                                                   | merges into `__rare__`          |
+| **Cat encoders**              | `cat_encoder="onehot                                                          | ordinal                         | target                          | woe    | hash   | freq     | none"` | Target/WOE need `target=` |
+| **Text vecs**                 | `text_vectorizer="tfidf                                                       | count                           | hashing"`·`text_cols=[…]`       |        |
+| **Datetime expand**           | `datetime_cols=[…]`                                                           | Y/M/D/DOW/HR                    |
+| **Cyclical sin–cos**          | `cyclical_cols={"month":12,"dow":7}`                                          |                                 |
+| **Date deltas**               | `date_delta_cols={"signup":"today"}`                                          | days-since                      |
+| **Aggregations**              | `aggregations={"cust_id":["amt_mean","amt_sum"]}`                             | group-by roll-ups               |
+| **SMOTE**                     | `sampler="smote"`                                                             | oversample during **fit**       |
+| Custom plug-ins               | `custom_steps=[my_func]`                                                      | any `pd.DataFrame→pd.DataFrame` |
 
 ---
 
@@ -53,6 +53,10 @@ fe = FeatureEngineer(
         cyclical_cols={"hour":24},
         polynomial_degree=2,
         sampler="smote"
+        cat_encoding="target",
+        text_vectorizer="tfidf",
+        corr_threshold=.9,
+        mi_quantile=.05
      ).fit(df, df.is_churn)
 X = fe.transform(df); fe.save()
 ```
@@ -69,27 +73,20 @@ python -m Feature_Engineering.feature_engineering \
 
 ---
 
-### 5·C Artefacts
+### 5·C Artefacts <a name="5c-artifact--generated"></a>
 
-| File                                | Role                                       |
-| ----------------------------------- | ------------------------------------------ |
-| `models/preprocessor.joblib`        | Frozen transform pipeline (+SMOTE if used) |
-| `models/preprocessor_manifest.json` | SHA-256 + config snapshot                  |
-| `reports/feature_shape.txt`         | Dense/-sparse shape & nnz %                |
-
----
-
-### 5·D Exit Checklist
-
-- [ ] Pipeline fitted on **train + val** only (no test leakage)
-- [ ] `preprocessor.joblib` tracked in DVC / registry
-- [ ] Shape & sparsity logged
-- [ ] No silent drops of cat/text columns
-- [ ] Custom plug-in tests pass
+| File                                   | Role                                       |
+| -------------------------------------- | ------------------------------------------ |
+| `models/preprocessor.joblib`           | Frozen transform pipeline (+SMOTE if used) |
+| `models/preprocessor_manifest.json`    | SHA-256 + config snapshot                  |
+| `reports/feature_shape.txt`            | Dense/-sparse shape & nnz %                |
+| `reports/feature/feature_audit.json`   | n features before / after filtering        |
+| `docs/feature_dictionary.md`           | human-readable feature dictionary          |
+| `docs/feature_notes.yaml` _(optional)_ | hand-written blurbs                        |
 
 ---
 
-### 5·E Custom Feature-Engineering Plug-ins<a name="5e-custom--advanced-plug-ins"></a>
+### 5·D Custom Feature-Engineering Plug-ins<a name="5d-custom--advanced-plug-ins"></a>
 
 Not every transform you need will fit the built-ins.
 `FeatureEngineer` therefore accepts a list of **arbitrary callables**:
@@ -134,9 +131,72 @@ _Guidelines_
 > Once your custom step is serialised inside `preprocessor.joblib`, every model
 > in Phase 6 will use it automatically—no extra code paths to maintain.
 
+### 5·E Automated **Feature Dictionary & Audit**<a name="5f-feature-dictionary"></a>
+
+| ❓ **Why bother?** | • New joiners instantly know what every column means.<br>• Reviewers & auditors can trace transformations and PII removal.<br>• CI can diff dictionaries and alert you when features silently disappear. |
+
+> **Output** – a single Markdown file<br> > **`docs/feature_dictionary.md`** regenerated on every Phase-5 run.
+
+---
+
+#### 🔨 How it is built & where it lives
+
+1. **`feature_engineering.py`** writes a machine-readable summary
+   to **`reports/feature/feature_audit.json`** each time you call `.save()`.
+   It records:
+
+   - origin column
+   - transformation(s) applied
+   - final dtype & whether it survived NZV / MI / filter rules
+
+2. _(Optional)_ Curate human-friendly notes in
+   **`docs/feature_notes.yaml`** (one-liners, units, caveats).
+
+3. **`scripts/build_feature_dict.py`** merges the JSON + YAML and spits out
+   the Markdown table.
+
+   ```bash
+   python scripts/build_feature_dict.py
+   ```
+
+The helper is invoked automatically at the end of the **Phase-5 CLI**
+(`python -m Feature_Engineering.feature_engineering …`), but you can run it
+stand-alone if you edit notes.
+
+4. CI / Git pre-commit can diff the generated file to catch sneaky feature
+   drifts.
+
+---
+
+#### ✨ Sample snippet from the generated dictionary
+
+```markdown
+# 📖 Feature Dictionary (63 columns)
+
+| Feature          | Origin   | Transform      | Kept | Notes                                           |
+| ---------------- | -------- | -------------- | ---- | ----------------------------------------------- |
+| `income_log`     | income   | log1p          | ✅   | Log of monthly income to mitigate right-skew.   |
+| `cyc_month_sin`  | month    | cyclical (sin) | ✅   | Sine component of calendar month (period = 12). |
+| `zip_target_enc` | zip_code | target encode  | ✅   | Smoothed target-encoding of 18 k ZIP codes.     |
+| `cust_id`        | cust_id  | —              | ❌   | Dropped – identifier only.                      |
+```
+
+---
+
+#### 🛂 Exit-check add-on (tick before Phase 6)
+
+- [ ] `feature_dictionary.md` updated & committed
+- [ ] Any newly _dropped_ or _added_ columns reviewed by a teammate
+- [ ] Hand-written notes added for every new engineered feature
+
+> **Bottom-line:** No one on the future 50 k-engineer team should ever ask
+> “What does `delta_signup_days` actually mean?” again.
+
+---
+
 ## 🆕 Phase 5·½ — **Baseline Benchmarking & & Pre-Processor Freeze** <a name="5.5-phase-baseline-freeze"></a>
 
-> _Glue_ between **Feature Engineering** and **Model Design**.  
+> _Glue_ between **Feature Engineering** and **Model Design**.
 > Freezes deterministic splits, prevents leakage, and sets a “beat-that” baseline.
 
 | Sub-step                          | Goal                                                        | Artefact(s)                                                    |
@@ -182,3 +242,7 @@ The script:
 > If the script fails, fix the issues before proceeding to Phase 6.
 
 ---
+
+```
+
+```

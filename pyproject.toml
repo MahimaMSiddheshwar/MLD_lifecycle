@@ -30,6 +30,8 @@ dependencies = [
   "missingno",
   "imblearn",            # SMOTE / NearMiss
   "great_expectations",  # only if you plan to use --gx flag
+  "scikit-learn>=1.4",
+  "category-encoders>=2.6"
 ]
 
 # — Optional extras  -----------------------------------------------------------

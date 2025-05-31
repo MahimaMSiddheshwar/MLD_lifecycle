@@ -167,6 +167,12 @@ python -m Data_Analysis.EDA \
 >    | **4·½·3 Collinearity** | drop one of pairs with ρ > 0.95 | ″ | correlation heatmap |
 >    | **4·½·4 Save plan** | Column lists for next phases | `"feature_plan.json"` |
 
+> Drop noise ➜ filter weak / redundant features ➜ create deterministic splits.
+
+> **Note**: this phase is _not_ a part of the main pipeline, but rather a
+> **preparation step** to ensure the data is clean and ready for modeling.
+> File: **[`feature_selector.py`](src/Data%20Analysis/feature_selector.py)**
+
 ```bash
  # full run – stratified split, MI filter @ 0.001, corr prune @ 0.95
  python -m Data_Analysis.feature_selector \
