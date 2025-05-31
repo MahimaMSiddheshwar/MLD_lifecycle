@@ -19,6 +19,7 @@ battle-tested structure instead of an empty folder.
 ```text
 .
 ├── data/                         # raw/, interim/, processed/
+├── docs/                         # processed docs
 ├── src/
 │   ├── Data Ingestion/
 │   │   └── data_collector.py     # Phase-2 engine  (⇨ see link below)
@@ -49,69 +50,75 @@ battle-tested structure instead of an empty folder.
 1. [Phase 1 — Problem Definition](#1-phase-1--problem-definition)
 
 2. [Phase 2 — **Data Collection**](src/Data%20Ingestion/data_collector.py)
-   • [2A Flat-Files & Object Storage](src/Data%20Ingestion/Data%20Ingestion.md#2a-flat-files--object-storage)
-   • [2B Relational Databases](src/Data%20Ingestion/Data%20Ingestion.md#2b-relational-databases)
-   • [2C NoSQL & Analytical Stores](src/Data%20Ingestion/Data%20Ingestion.md#2c-nosql--analytical-stores)
-   • [2D APIs & Web Scraping](src/Data%20Ingestion/Data%20Ingestion.md#2d-apis--web-scraping)
-   • [2E Streaming & Message Queues](src/Data%20Ingestion/Data%20Ingestion.md#2e-streaming--message-queues)
-   • [2F SaaS & Cloud-Native Connectors](src/Data%20Ingestion/Data%20Ingestion.md#2f-saas--cloud-native-connectors)
-   • [2G Sensors & IoT](src/Data%20Ingestion/Data%20Ingestion.md#2g-sensors--iot)
-   • [2H Data Privacy & Governance Hooks](src/Data%20Ingestion/Data%20Ingestion.md#2h-data-privacy--governance-hooks)
-   • [2I Logging, Auditing & Checksums](src/Data%20Ingestion/Data%20Ingestion.md#2i-logging-auditing--checksums)
+
+   - [2A Flat-Files & Object Storage](src/Data%20Ingestion/Data%20Ingestion.md#2a-flat-files--object-storage)
+   - [2B Relational Databases](src/Data%20Ingestion/Data%20Ingestion.md#2b-relational-databases)
+   - [2C NoSQL & Analytical Stores](src/Data%20Ingestion/Data%20Ingestion.md#2c-nosql--analytical-stores)
+   - [2D APIs & Web Scraping](src/Data%20Ingestion/Data%20Ingestion.md#2d-apis--web-scraping)
+   - [2E Streaming & Message Queues](src/Data%20Ingestion/Data%20Ingestion.md#2e-streaming--message-queues)
+   - [2F SaaS & Cloud-Native Connectors](src/Data%20Ingestion/Data%20Ingestion.md#2f-saas--cloud-native-connectors)
+   - [2G Sensors & IoT](src/Data%20Ingestion/Data%20Ingestion.md#2g-sensors--iot)
+   - [2H Data Privacy & Governance Hooks](src/Data%20Ingestion/Data%20Ingestion.md#2h-data-privacy--governance-hooks)
+   - [2I Logging, Auditing & Checksums](src/Data%20Ingestion/Data%20Ingestion.md#2i-logging-auditing--checksums)
 
 3. [Phase 3 — **Data Preparation**](src/Data%20Cleaning/data_preparation.py)
-   • [3A Schema Validation & Data Types](src/Data%20Cleaning/Data%20Cleaning.md#3a-schema-validation--data-types)
-   • [3B1 De-duplication and Invariant Pruning](src/Data%20Cleaning/Data%20Cleaning.md#3b-dedup)
-   • [3B Missing-Value Strategy](src/Data%20Cleaning/Data%20Cleaning.md#3b-missing-value-strategy)
-   • [3C Outlier Detection & Treatment](src/Data%20Cleaning/Data%20Cleaning.md#3c-outlier-detection--treatment)
-   • [3D Data Transformation & Scaling](src/Data%20Cleaning/Data%20Cleaning.md#3d-data-transformation--scaling)
-   • [3E Class / Target Balancing](src/Data%20Cleaning/Data%20Cleaning.md#3e-class-target-balancing)
-   • [3F Data Versioning & Lineage](src/Data%20Cleaning/Data%20Cleaning.md#3f-data-versioning--lineage)
-   • [3G Feature Pruning (High NaN / High Corr)](src/Data%20Cleaning/Data%20Cleaning.md#3g-prune)
+
+   - [3A Schema Validation & Data Types](src/Data%20Cleaning/Data%20Cleaning.md#3a-schema-validation--data-types)
+   - [3B1 De-duplication and Invariant Pruning](src/Data%20Cleaning/Data%20Cleaning.md#3b-dedup)
+   - [3B Missing-Value Strategy](src/Data%20Cleaning/Data%20Cleaning.md#3b-missing-value-strategy)
+   - [3C Outlier Detection & Treatment](src/Data%20Cleaning/Data%20Cleaning.md#3c-outlier-detection--treatment)
+   - [3D Data Transformation & Scaling](src/Data%20Cleaning/Data%20Cleaning.md#3d-data-transformation--scaling)
+   - [3E Class / Target Balancing](src/Data%20Cleaning/Data%20Cleaning.md#3e-class-target-balancing)
+   - [3F Data Versioning & Lineage](src/Data%20Cleaning/Data%20Cleaning.md#3f-data-versioning--lineage)
+   - [3G Feature Pruning (High NaN / High Corr)](src/Data%20Cleaning/Data%20Cleaning.md#3g-prune)
 
 4. [Phase 4 — **Exploratory Data Analysis (EDA)**](src/Data%20Analysis/EDA.py)
-   • [4A Univariate Statistics & Plots](src/Data%20Analysis/Data%20Analysis.md#4a-univariate-statistics--plots)
-   • [4B Bivariate Tests & Visuals](src/Data%20Analysis/Data%20Analysis.md#4b-bivariate-tests--visuals)
-   • [4C Multivariate Tests & Diagnostics](src/Data%20Analysis/Data%20Analysis.md#4c-multivariate-tests--diagnostics)
-   • [4D Advanced EDA (MI · Cramer-V · Embeddings · TS Decomp)](src/Data%20Analysis/EDA_advance.py)
+   - [4A Univariate Statistics & Plots](src/Data%20Analysis/Data%20Analysis.md#4a-univariate-statistics--plots)
+   - [4B Bivariate Tests & Visuals](src/Data%20Analysis/Data%20Analysis.md#4b-bivariate-tests--visuals)
+   - [4C Multivariate Tests & Diagnostics](src/Data%20Analysis/Data%20Analysis.md#4c-multivariate-tests--diagnostics)
+   - [4D Advanced EDA (MI · Cramer-V · Embeddings · TS Decomp)](src/Data%20Analysis/EDA_advance.py)
 
 4·½. [Feature Selection & Early Split](src/Data%20Analysis/Data%20Analysis.md#4.5-feature-selection--split)
 
 5. [Phase 5 — Feature Engineering](src/Feature%20Engineering/feature_engineering.py)
-   • [5A Scaling & Normalization](src/Feature%20Engineering/Feature%20Engineering.md#5-phase-5--feature-engineering)
-   • [5B Encoding Categorical Variables](#5b-encoding-categorical-variables)
-   • [5C Handling Imbalanced Data](#5c-handling-imbalanced-data)
-   • [5D Dimensionality Reduction](#5d-dimensionality-reduction)
-   • [5E Custom Feature-Engineering Plug-ins](src/Feature%20Engineering/Feature%20Engineering.md#5e-custom--advanced-plug-ins)
+
+   - [5A Scaling & Normalization](src/Feature%20Engineering/Feature%20Engineering.md#5-phase-5--feature-engineering)
+   - [5B Encoding Categorical Variables](#5b-encoding-categorical-variables)
+   - [5C Handling Imbalanced Data](#5c-handling-imbalanced-data)
+   - [5D Dimensionality Reduction](#5d-dimensionality-reduction)
+   - [5E Custom Feature-Engineering Plug-ins](src/Feature%20Engineering/Feature%20Engineering.md#5e-custom--advanced-plug-ins)
 
 5.½. [Dataset Partition & Baseline Benchmarking](src/Feature%20Engineering/Feature%20Engineering.md#5.5-phase-baseline-freeze)
 
 6. [Phase 6 — Model Design & Training](#6-phase-6--model-design--training)
-   • [6A Algorithm Selection](#6a-algorithm-selection)
-   • [6B Regularisation Techniques](#6b-regularisation-techniques)
-   • [6C Cross-Validation Variants](#6c-cross-validation-variants)
-   • [6D Hyper-Parameter Optimisation](#6d-hyper-parameter-optimisation)
-   • [6E Early-Stopping & LR Scheduling](#6e-early-stopping--lr-scheduling)
-   • [6F Ensembling & Bagging / Stacking](#6f-ensembling--bagging--stacking)
-   • [6G Data Augmentation & Noise Injection](#6g-data-augmentation)
+
+   - [6A Algorithm Selection](#6a-algorithm-selection)
+   - [6B Regularisation Techniques](#6b-regularisation-techniques)
+   - [6C Cross-Validation Variants](#6c-cross-validation-variants)
+   - [6D Hyper-Parameter Optimisation](#6d-hyper-parameter-optimisation)
+   - [6E Early-Stopping & LR Scheduling](#6e-early-stopping--lr-scheduling)
+   - [6F Ensembling & Bagging / Stacking](#6f-ensembling--bagging--stacking)
+   - [6G Data Augmentation & Noise Injection](#6g-data-augmentation)
 
 7. [Phase 7 — **Evaluation, Regularisation Audit & Hardening**](#7-phase-7--evaluation-regularisation--hardening)
-   • [7A Core Metrics](#7a-core-metrics)
-   • [7B Calibration & Probabilistic Quality](#7b-calibration--probability-quality)
-   • [7C Bias / Fairness & Group Metrics](#7c-bias--fairness)
-   • [7D Explainability (SHAP · LIME · XAI)](#7d-explainability)
-   • [7E Robustness & Adversarial Testing](#7e-robustness--adversarial-testing)
-   • [7F Over-fitting Diagnostics](#7f-over-fitting-diagnostics)
-   • [7G Model Card & Governance Sign-off](#7g-model-card--governance)
+
+   - [7A Core Metrics](#7a-core-metrics)
+   - [7B Calibration & Probabilistic Quality](#7b-calibration--probability-quality)
+   - [7C Bias / Fairness & Group Metrics](#7c-bias--fairness)
+   - [7D Explainability (SHAP · LIME · XAI)](#7d-explainability)
+   - [7E Robustness & Adversarial Testing](#7e-robustness--adversarial-testing)
+   - [7F Over-fitting Diagnostics](#7f-over-fitting-diagnostics)
+   - [7G Model Card & Governance Sign-off](#7g-model-card--governance)
 
 8. [Phase 8 — **Deployment & Serving**](#8-phase-8--deployment--serving)
-   • [8A Model Serialization](#8a-model-serialization)
-   • [8B Packaging & Containerization](#8b-packaging--containerization)
-   • [8C API & Micro-service Layer](#8c-api--micro-service-layer)
-   • [8D Inference Optimisation](#8d-inference-optimisation)
-   • [8E CI/CD & Model-Registry Promotion](#8e-cicd--model-registry-promotion)
-   • [8F Release Strategies](#8f-release-strategies)
-   • [8G Runtime Security](#8g-runtime-security)
+
+   - [8A Model Serialization](#8a-model-serialization)
+     • [8B Packaging & Containerization](#8b-packaging--containerization)
+     • [8C API & Micro-service Layer](#8c-api--micro-service-layer)
+     • [8D Inference Optimisation](#8d-inference-optimisation)
+     • [8E CI/CD & Model-Registry Promotion](#8e-cicd--model-registry-promotion)
+     • [8F Release Strategies](#8f-release-strategies)
+     • [8G Runtime Security](#8g-runtime-security)
 
 9. [Phase 9 — **Monitoring, Drift & Retraining**](#9-phase-9--monitoring-drift--retraining)
    • [9A Performance & Latency Metrics](#9a-performance--latency-metrics)
@@ -128,7 +135,68 @@ battle-tested structure instead of an empty folder.
 
 12. [FAQ](#12-faq)
 
-13. [License](#13-license)
+---
+
+## Getting Started
+
+| Directory / File         | What lives inside                                                     |
+| ------------------------ | --------------------------------------------------------------------- |
+| `data/`                  | **raw → interim → processed** snapshots (all DVC-tracked)             |
+| `docs/`                  | auto-generated artefacts e.g. **feature dictionary**                  |
+| `reports/`               | plots, metrics, lineage manifests                                     |
+| `models/`                | frozen pre-processors, baseline models, MLflow artefacts              |
+| `src/`                   | source code, grouped by ML phase                                      |
+| `dvc.yaml + params.yaml` | declarative pipeline & hyper-parameters                               |
+| `pyproject.toml`         | installable package metadata – `pip install -e .` makes CLI available |
+
+### 1. Clone & bootstrap
+
+```bash
+git clone <this-repo> ; cd mldlc
+python -m venv .venv && source .venv/bin/activate   # or conda/mamba
+pip install -e .[dev]                               # brings deps + extras
+dvc pull                                            # pulls example data (if remote set)
+```
+
+### 2. Reproduce the entire pipeline
+
+```bash
+dvc repro                                           # runs every stage once
+```
+
+> Need only a subset? Append the stage name – e.g. `dvc repro prepare`
+> (`dvc stage list` shows them all).
+
+### 3. Tweak parameters & iterate
+
+```bash
+vim params.yaml                                     # change any flag
+dvc exp run                                         # launches a new experiment
+dvc exp diff                                        # shows metric deltas
+dvc exp push -r origin                              # share results with the team
+```
+
+### 4. One-shot phase runs (skip DVC)
+
+```bash
+# Phase-2 : collect data
+omni-collect file data/raw/users.csv --redact-pii --save
+
+# Phase-3 : prepare with custom flags
+python -m Data_Cleaning.data_preparation --knn --outlier iso --scaler robust
+
+# Phase-4 : full EDA profile
+python -m Data_Analysis.EDA --mode all --target is_churn --profile
+```
+
+### 5. Cleaning up work files
+
+```bash
+dvc gc -w               # remove unused data/artefacts in current workspace
+rm -rf .venv            # nuke the virtual-env if you need a fresh start
+```
+
+---
 
 ## 1 — Phase 1 · Problem Definition<a name="1-phase-1--problem-definition"></a>
 

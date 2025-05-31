@@ -1,0 +1,145 @@
+# dvc.yaml ─ orchestrates the entire MLDLC
+#   • every stage has: cmd, deps (code + data), outs/metrics/plots
+#   • params live in params.yaml   (hyper-params, paths, target column, etc.)
+#   • large artefacts are pushed to the DVC remote, NOT Git
+# -------------------------------------------------------------------------
+
+stages:
+  # ───────────────────────── PHASE-2 · DATA COLLECTION ──────────────────
+  collect:
+    cmd: python -m data_ingest.omni_cli ${params:collect.args}
+    deps:
+      - src/data_ingest/ # all collector code
+      - params.yaml # holds URL / DSN / tokens (never plaintext)
+    outs:
+      - data/raw/ # immutable snapshot (versioned in DVC)
+
+  # ───────────────────────── PHASE-3 · DATA PREP ────────────────────────
+  prepare:
+    cmd: python -m ml_pipeline.prepare ${params:prepare.args}
+    deps:
+      - data/raw/
+      - src/ml_pipeline/prepare.py
+      - params.yaml
+    outs:
+      - data/interim/clean.parquet
+      - data/processed/scaled.parquet
+    metrics:
+      - reports/lineage/prep_manifest.json:
+          cache: false # tiny JSON stays in Git
+
+  # ───────────────────────── PHASE-4 · EDA  (core + adv) ────────────────
+  eda_core:
+    cmd: python -m Data_Analysis.EDA \
+      --mode all --target ${params:target}
+    deps:
+      - data/interim/clean.parquet
+      - src/Data_Analysis/EDA.py
+      - params.yaml
+    outs-persist:
+      - reports/eda/ # keep plots under version control
+
+  eda_adv:
+    cmd: python -m Data_Analysis.EDA_advance
+    deps:
+      - data/interim/clean.parquet
+      - src/Data_Analysis/EDA_advance.py
+    outs-persist:
+      - reports/eda/advanced/
+
+  # ───────────────────────── PHASE-4½ · FEATURE SELECTION ───────────────
+  feat_select:
+    cmd: python -m Feature_Selection.feature_select \
+      --data data/processed/scaled.parquet \
+      --target ${params:target}
+    deps:
+      - data/processed/scaled.parquet
+      - src/Feature_Selection/feature_select.py
+    outs:
+      - data/processed/selected.parquet
+    metrics:
+      - reports/feature/feature_audit.json:
+          cache: false
+
+  # ───────────────────────── PHASE-5 · FEATURE ENGINEERING ──────────────
+  feat_engineer:
+    cmd: python -m Feature_Engineering.feature_engineering \
+      --data data/processed/selected.parquet \
+      --target ${params:target} \
+      ${params:feature.args}
+    deps:
+      - data/processed/selected.parquet
+      - src/Feature_Engineering/feature_engineering.py
+      - params.yaml
+    outs:
+      - models/preprocessor.joblib
+      - reports/feature/feature_shape.txt
+    metrics:
+      - reports/feature/feature_audit.json:
+          cache: false
+
+  # ───────────────────────── PHASE-5½ · SPLIT & BASELINE ────────────────
+  split_baseline:
+    cmd: python -m Data_Cleaning.split_and_baseline \
+      --target ${params:target} --seed ${params:split.seed} --stratify
+    deps:
+      - data/processed/selected.parquet # **never** touch test data later
+      - models/preprocessor.joblib
+      - src/Data_Cleaning/split_and_baseline.py
+    outs:
+      - data/splits/ # train / val / test parquet
+      - models/preprocessor_manifest.json
+    metrics:
+      - reports/baseline/baseline_metrics.json:
+          cache: false
+
+  # ───────────────────────── PHASE-6 · TRAIN + TUNE ─────────────────────
+  train:
+    cmd: python -m model.train --config params.yaml
+    deps:
+      - data/splits/train.parquet
+      - data/splits/val.parquet
+      - models/preprocessor.joblib
+      - src/model/train.py
+      - params.yaml
+    outs:
+      - models/model.pkl
+      - models/model_card.md
+    metrics:
+      - reports/metrics/train_metrics.json:
+          cache: false
+    plots:
+      - reports/metrics/loss_curve.csv:
+          x: epoch
+          y: loss
+
+  # ───────────────────────── PHASE-7 · EVALUATE ─────────────────────────
+  evaluate:
+    cmd: python -m model.evaluate --config params.yaml
+    deps:
+      - data/splits/test.parquet
+      - models/model.pkl
+      - src/model/evaluate.py
+    metrics:
+      - reports/metrics/test_metrics.json:
+          cache: false
+    plots:
+      - reports/metrics/roc_curve.csv:
+          template: simple
+
+  # ───────────────────────── PHASE-8 · PACKAGE ──────────────────────────
+  package:
+    cmd: python -m model.package --model models/model.pkl
+    deps:
+      - models/model.pkl
+      - src/model/package.py
+    outs:
+      - artefacts/model.onnx
+
+  # ───────────────────────── PHASE-9 · DEPLOY (optional) ────────────────
+  deploy:
+    cmd: bash deploy/push_to_registry.sh artefacts/model.onnx
+    deps:
+      - artefacts/model.onnx
+    outs:
+      - deploy/last_deploy.txt

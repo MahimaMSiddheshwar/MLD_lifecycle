@@ -1,0 +1,61 @@
+# params.yaml ─ central place for every tunable knob
+# You can add / rename keys freely as long as you reference
+# them with ${params:…} in dvc.yaml or read them in your code.
+
+########################################################################
+# ─────── Phase-2 · Data Collection ────────────────────────────────────
+########################################################################
+collect:
+  # CLI flags passed straight through to omni_cli.py
+  # Example calls shown; comment / extend as needed.
+  args: >
+    file data/raw/users.csv
+    --redact-pii
+    --save
+  # If you crawl an API or DB, keep the secrets OUT of Git
+  # and feed them via env-vars or your CI’s secret store.
+  # (omni_cli.py reads os.environ["PG_DSN"] etc.)
+
+########################################################################
+# ─────── Phase-3 · Data Preparation ───────────────────────────────────
+########################################################################
+prepare:
+  # flags piped into ml_pipeline.prepare
+  args: >-
+    --knn                     # fancy imputer
+    --outlier iso             # Isolation Forest
+    --scaler robust           # RobustScaler
+    --balance smote           # oversample minority
+
+########################################################################
+# ─────── Phase-4½ · Feature Selection – optional thresholds ───────────
+########################################################################
+feature_select:
+  nzv_threshold: 1e-5 # near-zero-variance filter
+  corr_threshold: 0.95 # numeric corr pruning
+  mi_quantile: 0.10 # bottom 10 % MI / F-score dropped
+
+########################################################################
+# ─────── Phase-5 · Feature Engineering ────────────────────────────────
+########################################################################
+feature:
+  args: >-
+    --numeric_scaler robust
+    --numeric_power yeo
+    --log_cols revenue
+    --cat_encoding hash
+    --rare_threshold 0.01
+    --text_vectorizer tfidf
+    --text_cols review
+    --polynomial_degree 2
+
+########################################################################
+# ─────── Phase-5½ · Split & Baseline ──────────────────────────────────
+########################################################################
+split:
+  seed: 42 # deterministic reproducibility
+
+########################################################################
+# ─────── Cross-cutting  ───────────────────────────────────────────────
+########################################################################
+target: is_churn # single source of truth – all stages read this
