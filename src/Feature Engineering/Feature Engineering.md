@@ -1,5 +1,6 @@
 ## 5 — Phase 5 · **Feature Engineering**<a name="5-phase-5--feature-engineering"></a>
 
+> **Goal**: Create, transform, and augment features to improve model performance. All transforms run only on **train** (and val if needed), then applied to **test** to ensure no leakage.
 > All “column-crafting” lives in **[`feature_engineering.py`](src/Feature%20Engineering/feature_engineering.py)**.  
 > The `FeatureEngineer` class is a **buffet**: every classic transform is baked-in but
 > disabled by default—switch items on via kwargs or a small JSON/YAML config.
@@ -37,6 +38,32 @@ fe.save()  # ➜ models/preprocessor.joblib
 ```
 
 **Heavy stack**
+
+```text
+src/feature_engineering/feature_engineering.py
+    FeatureEngineer(
+        target="is_churn",
+        numeric_scaler="robust",           # standard|minmax|robust|none
+        numeric_power="yeo",               # yeo|boxcox|quantile|none
+        log_cols=["revenue"],              # apply `log1p` to these columns
+        quantile_bins={"age":4},           # 4 quantile bins for age
+        polynomial_degree=2,               # generate second‑order polynomials/interactions
+        rare_threshold=0.01,               # group categories with <1 % frequency into “__rare__”
+        cat_encoding="target",             # onehot|ordinal|target|woe|hash|freq|none
+        text_vectorizer="tfidf",           # tfidf|count|hashing|none
+        text_cols=["review"],              # columns to vectorize with text_vectorizer
+        datetime_cols=["last_login"],       # for datetime expand (year/month/day/dow/hour)
+        cyclical_cols={"hour":24},          # for hour→two sin/cos columns
+        date_delta_cols={"signup_date":"2020-01-01"},  # days since signup
+        aggregations={"customer_id":["amt_mean","amt_sum"]},  # groupby features: mean and sum
+        drop_nzv=True,                     # Phase 4½ near‑zero variance prune (fast)
+        corr_threshold=0.95,               # Phase 4½ high‑corr prune for numeric
+        mi_quantile=0.10,                  # Phase 4½ drop bottom 10 % MI/F‑score
+        custom_steps=[my_custom_func],     # arbitrary pd.DataFrame→pd.DataFrame transforms
+        save_path="models/preprocessor.joblib",
+        report_dir="reports/feature"       # where to write feature_audit.json + shape
+    )
+```
 
 ```python
 fe = FeatureEngineer(
@@ -183,20 +210,42 @@ stand-alone if you edit notes.
 
 ---
 
-#### 🛂 Exit-check add-on (tick before Phase 6)
+### 5.F Exit-check add-on (tick before Phase 6)
 
 - [ ] `feature_dictionary.md` updated & committed
 - [ ] Any newly _dropped_ or _added_ columns reviewed by a teammate
 - [ ] Hand-written notes added for every new engineered feature
+- [ ] Pipeline was fitted on **train + val** only (no test leakage).
+- [ ] `preprocessor.joblib` is tracked by DVC or your model registry.
+- [ ] `feature_shape.txt` logged (shape: `n_samples × n_features_after_transform`).
+- [ ] No silent column drops (all cat/text columns either encoded or passed through).
+- [ ] All custom plug‑in tests pass (`tests/test_custom_steps.py`).
 
-> **Bottom-line:** No one on the future 50 k-engineer team should ever ask
-> “What does `delta_signup_days` actually mean?” again.
+---
+
+#### 5.G Custom Feature‑Engineering Plug‑Ins
+
+Any transform that doesn’t fit the built‑ins can be added as a `custom_steps=[func1, func2, …]`. Each `func` must be:
+
+```python
+def my_custom_func(df: pd.DataFrame) -> pd.DataFrame:
+    # - MUST return all original columns + any NEW columns you want to add.
+    # - NO I/O or global state inside the function. (Make it “pure.”)
+    # - If you need parameters, wrap them in a closure or use functools.partial.
+    # Example: add domain‑specific ratio features + log tenure:
+    out = df.copy()
+    out["spend_per_visit"] = out["total_spend"] / (out["num_visits"].clip(lower=1))
+    out["log_tenure"]      = np.log1p(out["tenure_days"])
+    return out
+```
+
+After the pipeline serializes your function in `models/preprocessor.joblib`, every model in Phase 6 automatically uses it—no extra code paths.
 
 ---
 
 ## 🆕 Phase 5·½ — **Baseline Benchmarking & & Pre-Processor Freeze** <a name="5.5-phase-baseline-freeze"></a>
 
-> _Glue_ between **Feature Engineering** and **Model Design**.
+> **Goal**: _Glue_ between **Feature Engineering** and **Model Design**.
 > Freezes deterministic splits, prevents leakage, and sets a “beat-that” baseline.
 
 | Sub-step                          | Goal                                                        | Artefact(s)                                                    |

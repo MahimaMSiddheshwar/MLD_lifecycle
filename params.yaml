@@ -59,3 +59,43 @@ split:
 # ─────── Cross-cutting  ───────────────────────────────────────────────
 ########################################################################
 target: is_churn # single source of truth – all stages read this
+```yaml
+# params.yaml
+
+prep:
+  knn: false
+  outlier: "iqr"      # choices: iqr, zscore, iso
+  scaler: "standard"  # choices: standard, robust, yeo
+  balance: "none"     # choices: none, smote, nearmiss
+  target: "is_churn"
+
+eda:
+  mode: "all"
+  target: "is_churn"
+  profile: true
+
+features:
+  numeric_scaler: "robust"
+  numeric_power: "yeo"
+  log_cols: ["revenue"]
+  quantile_bins: { "age": 4 }
+  polynomial_degree: 2
+  rare_threshold: 0.01
+  cat_encoding: "target"
+  text_vectorizer: "tfidf"
+  text_cols: ["review"]
+  datetime_cols: ["last_login"]
+  cyclical_cols: { "hour": 24 }
+  date_delta_cols: { "signup_date": "2023-01-01" }
+  aggregations: { "customer_id": ["amount_mean", "amount_sum"] }
+  drop_nzv: true
+  corr_threshold: 0.95
+  mi_quantile: 0.10
+  target: "is_churn"
+
+split_baseline:
+  seed: 42
+  stratify: true
+  oversample: false
+  target: "is_churn"
+```

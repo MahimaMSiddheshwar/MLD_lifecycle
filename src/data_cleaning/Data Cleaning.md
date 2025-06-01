@@ -45,7 +45,7 @@ _Optional_: `--knn` flag enables **`KNNImputer`** (k=5).
 python -m ml_pipeline.prepare --knn      # fancy impute
 ```
 
-_Diagnostics:_ generates a `missingno.matrix` plot for the first 1 000 rows.
+_Diagnostics:_ generates a `missingno.matrix` plot for the first 1 000 rows. (saved under `reports/lineage`).
 
 ---
 
@@ -68,6 +68,13 @@ _Diagnostics:_ generates a `missingno.matrix` plot for the first 1 000 rows.
 | **StandardScaler**                 | `--scaler standard`        | zero-mean / unit-var       |
 | **RobustScaler** (IQR)             | `--scaler robust`          | heavy-outlier datasets     |
 | **PowerTransformer (Yeo-Johnson)** | `--scaler yeo`             | make data closer to normal |
+
+**Examples**:
+
+```bash
+python -m data_cleaning.data_preparation --scaler robust
+python -m data_cleaning.data_preparation --outlier iso --scaler yeo
+```
 
 ---
 
@@ -101,9 +108,6 @@ python -m ml_pipeline.prepare --balance smote
 }
 ```
 
-Add these files to **DVC** or **LakeFS** so every model build can
-pin-point exactly which prep config & raw snapshot produced it.
-
 ---
 
 ### 3G Feature Pruning (High NaN / High Corr) <a name="3g-prune"></a>
@@ -128,6 +132,8 @@ python -m ml_pipeline.prepare \
        --scaler robust \
        --balance smote
 ```
+
+---
 
 ## 4·½. [Feature Selection & Early Train/Test Split](#4.5-feature-selection--split)
 

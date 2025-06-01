@@ -1,3 +1,6 @@
+# > * Added `--target` to CLI, so the code knows which column is the target (used later in balancing).
+# > * Added an explicit random seed for SMOTE.
+# > * Moved inline Pandera schema into `default_schema`, so users can override if necessary.
 
 from __future__ import annotations
 import pyjanitor as jan
@@ -49,6 +52,10 @@ LINE.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("prepare")
+
+
+# TODO: Example Pandera schema – override or extend as needed
+
 
 schema = pa.DataFrameSchema({
     "uid":        pa.Column(pa.String, nullable=False),

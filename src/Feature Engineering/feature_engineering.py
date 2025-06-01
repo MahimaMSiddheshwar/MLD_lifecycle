@@ -1,3 +1,10 @@
+# >
+# > * Removed unused `interactions` param (folded into `polynomial_degree`).
+# > * Ensured `FunctionTransformer(...)` inside the pipeline always gets a DataFrame with correct column names.
+# > * Added pre‑transform pruning (NZV + correlation filter).
+# > * Added MI/F‑score prune.
+# > * Writes `reports/feature/feature_audit.json` (counts) and `feature_shape.txt` (post‑transform shape).
+
 """
 Feature-engineering buffet — v3
 Adds:

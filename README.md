@@ -11,15 +11,46 @@ battle-tested structure instead of an empty folder.
 - **Consistent anatomy** – one place for data, code, reports, and models
 - **Phase gates** – checklists ensure you don’t jump ahead with fuzzy scope
 - **Security & governance hooks** – PII masking, lineage, and basic compliance
-- **Extensible** – each phase ships with a runnable Python stub you can swap or extend
-- **Tool-agnostic** – works for tabular, NLP, vision, or time-series; local or cloud
+- **Extensible** – each phase ships with a runnable Python stub you can swap or extend; add new columns, new transforms, or new models in minutes.
+- **Tool-agnostic** – works for tabular, NLP, vision, or time-series; local or cloud; nothing fancy like time‑series or images (yet you could extend it).
 
 ## Repo Scaffold
 
 ```text
 .
-├── data/                         # raw/, interim/, processed/
-├── docs/                         # processed docs
+├── data/
+    # Immutable data snapshots (tracked by DVC or Git LFS)
+│   ├── raw/
+    # Phase‑2 ingestion outputs (never edit manually!)
+│   ├── interim/
+    # Phase‑3 “cleaned & imputed” datasets
+│   └── processed/
+    # Phase‑3 “scaled / transformed” datasets
+├── docs/
+    # Auto‑generated or hand‑maintained Markdown docs
+│   ├── feature\_dictionary.md
+    # (Auto‑generated in Phase‑5)
+│   └── feature\_notes.yaml
+    # (Optional manual notes to augment feature‐dict)
+├── tests/
+    # Unit tests for each phase
+├── models/
+    # Phase‑5 preprocessor + Phase‑6 model artifacts
+│   ├── preprocessor.joblib
+│   ├── preprocessor\_manifest.json
+├── notebooks/                    # Optional ad‑hoc Jupyter notebooks
+│
+├── reports/
+    # Auto‑generated reports (EDA, baseline, feature audits)
+│   ├── eda/
+    # Phase‑4 EDA outputs
+│   ├── baseline/
+    # Phase‑5½ baseline metrics
+│   ├── feature/
+    # Phase‑5 feature audit + shape
+│   └── lineage/
+    # Phase‑3 lineage manifests
+│
 ├── src/
 │   ├── Data Ingestion/
 │   │   └── data_collector.py     # Phase-2 engine  (⇨ see link below)
@@ -31,15 +62,25 @@ battle-tested structure instead of an empty folder.
 │   │   └── EDA_advance.py        # Advanced EDA   (Phase-4 extra)
 │   └── Feature Engineering/
 │       └── feature_engineering.py
-├── notebooks/                    # Optional ad-hoc ipynb
-├── reports/                      # Auto-generated EDA, drift, model cards
-├── models/                       # MLflow or on-disk artefacts
+│   │
+│   └── feature\_engineering/
+│       ├── **init**.py
+│       └── feature\_engineering.py
+        # Phase‑5 “FeatureEngineer” buffet (scalers, encoders, bins, MI filter, custom plug‑ins)
 ├── docker/                       # Dockerfile & helpers
-├── dvc.yaml                      # DVC pipeline
-├── pyproject.toml                # editable-install metadata
-├── .github/                      # CI/CD workflows
-└── README.md                     # ← you’re reading it
+├── dvc.yaml                      # DVC pipeline (not modified here; see “How to run” below)
+├── params.yaml                   # Parameter file (not modified here)
+├── pyproject.toml                # Python metadata / dependencies
+├── .gitignore
+└── README.md                     # ← You are reading it
 ```
+
+> **Note:** Make sure you create a Python virtual environment (e.g. `python -m venv .venv && source .venv/bin/activate`) and then install dependencies via:
+>
+> ```bash
+> pip install -e .
+> pip install -r requirements-dev.txt
+> ```
 
 ---
 
@@ -113,21 +154,22 @@ battle-tested structure instead of an empty folder.
 8. [Phase 8 — **Deployment & Serving**](#8-phase-8--deployment--serving)
 
    - [8A Model Serialization](#8a-model-serialization)
-     • [8B Packaging & Containerization](#8b-packaging--containerization)
-     • [8C API & Micro-service Layer](#8c-api--micro-service-layer)
-     • [8D Inference Optimisation](#8d-inference-optimisation)
-     • [8E CI/CD & Model-Registry Promotion](#8e-cicd--model-registry-promotion)
-     • [8F Release Strategies](#8f-release-strategies)
-     • [8G Runtime Security](#8g-runtime-security)
+   - [8B Packaging & Containerization](#8b-packaging--containerization)
+   - [8C API & Micro-service Layer](#8c-api--micro-service-layer)
+   - [8D Inference Optimisation](#8d-inference-optimisation)
+   - [8E CI/CD & Model-Registry Promotion](#8e-cicd--model-registry-promotion)
+   - [8F Release Strategies](#8f-release-strategies)
+   - [8G Runtime Security](#8g-runtime-security)
 
 9. [Phase 9 — **Monitoring, Drift & Retraining**](#9-phase-9--monitoring-drift--retraining)
-   • [9A Performance & Latency Metrics](#9a-performance--latency-metrics)
-   • [9B Data & Concept Drift Detection](#9b-data--concept-drift-detection)
-   • [9C Model Quality Tracking & Alerts](#9c-model-quality-tracking--alerts)
-   • [9D Logging & Audit Trails](#9d-logging--audit-trails)
-   • [9E Automated Retraining Pipelines](#9e-automated-retraining-pipelines)
-   • [9F Rollback / Roll-forward Playbooks](#9f-rollback--roll-forward-playbooks)
-   • [9G Continuous Compliance & Model Registry](#9g-continuous-compliance--model-registry)
+
+   - [9A Performance & Latency Metrics](#9a-performance--latency-metrics)
+   - [9B Data & Concept Drift Detection](#9b-data--concept-drift-detection)
+   - [9C Model Quality Tracking & Alerts](#9c-model-quality-tracking--alerts)
+   - [9D Logging & Audit Trails](#9d-logging--audit-trails)
+   - [9E Automated Retraining Pipelines](#9e-automated-retraining-pipelines)
+   - [9F Rollback / Roll-forward Playbooks](#9f-rollback--roll-forward-playbooks)
+   - [9G Continuous Compliance & Model Registry](#9g-continuous-compliance--model-registry)
 
 10. [Cloud-Security Pillars](#10-cloud-security-pillars)
 
@@ -140,7 +182,7 @@ battle-tested structure instead of an empty folder.
 ## 1 — Phase 1 · Problem Definition<a name="1-phase-1--problem-definition"></a>
 
 > **Goal** — crystallise a fuzzy idea into an _implementable, testable and
-> measurable_ ML plan.  
+> measurable_ ML plan.
 > This phase is finished only when every item in the **Exit Checklist** is
 > tick-boxed and signed off.
 
@@ -157,7 +199,7 @@ battle-tested structure instead of an empty folder.
 
 ---
 
-### 2 · Translate to an ML Task
+### 1.2 · Translate to an ML Task
 
 1. **Prediction vs. ranking vs. clustering?**
    Map to _supervised_, _recommender_, _unsupervised_ or _forecasting_ bucket.
@@ -172,7 +214,7 @@ battle-tested structure instead of an empty folder.
 
 ---
 
-### 3 · Do a Data Reality Check _before_ Deep EDA
+### 1.3 · Do a Data Reality Check _before_ Deep EDA
 
 - Column availability at **prediction time** (no future leakage).
 - Gauge **volume vs freshness vs drift risk**.
@@ -182,7 +224,7 @@ battle-tested structure instead of an empty folder.
 
 ---
 
-### 4 · Scope & Deliverables (one-pager)
+### 1.4 · Scope & Deliverables (one-pager)
 
 | Section          | Example entry (fill in)                                      |
 | ---------------- | ------------------------------------------------------------ |
@@ -193,7 +235,7 @@ battle-tested structure instead of an empty folder.
 
 ---
 
-### 5 · SMART Success Criteria & Metrics
+### 1.5 · SMART Success Criteria & Metrics
 
 | Category         | Target metric & threshold | Why this metric?                             |
 | ---------------- | ------------------------- | -------------------------------------------- |
@@ -207,15 +249,15 @@ battle-tested structure instead of an empty folder.
 
 ---
 
-### 6 · Baseline Expectation
+### 1.6 · Baseline Expectation
 
-> Current heuristic = _always predict “no churn”_  
-> → Accuracy ≈ 75 %, F1 ≈ 0.00, ROC-AUC ≈ 0.50  
+> Current heuristic = _always predict “no churn”_
+> → Accuracy ≈ 75 %, F1 ≈ 0.00, ROC-AUC ≈ 0.50
 > Our ML model **must beat this baseline** on the hold-out set to be worthwhile.
 
 ---
 
-### 7 · Sketch the End-to-End Flow on One Whiteboard
+### 1.7 · Sketch the End-to-End Flow on One Whiteboard
 
 ```mermaid
 flowchart LR
@@ -231,23 +273,21 @@ flowchart LR
 
 ---
 
-### 8 Problem-Clarity ✅ **Exit Checklist**
+### 1.8 Problem-Clarity ✅ **Exit Checklist**
 
 _(all boxes must be ticked before Phase 2 – Data Collection – may start)_
 
-- [ ] **Business objective** phrased as one SMART sentence  
-       _e.g._ “Reduce voluntary churn by 15 % within 2 quarters”
+- [ ] **Business objective** phrased as one SMART sentence
+      _e.g._ “Reduce voluntary churn by 15 % within 2 quarters”
 - [ ] **Unit of analysis** defined – “prediction per _customer-ID_ per month”
-- [ ] **Target variable** unambiguously stated and time-stamped  
-       (`is_churn` ∈ {0, 1} measured 30 days after billing date)
+- [ ] **Target variable** unambiguously stated and time-stamped
+      (`is_churn` ∈ {0, 1} measured 30 days after billing date)
 - [ ] **Primary success metric** & numeric threshold agreed – “F1 ≥ 0.82 on Q4 hold-out”
-- [ ] **Constraints & assumptions** captured (latency, region, budget, feature-freeze date)
-- [ ] **High-level ethical / bias risks** listed (sensitive attributes, exclusion harms)
 - [ ] **Baseline approach** written down (random or simple heuristic score)
 - [ ] **All items reviewed & signed off** (attach link in project tracker)
 
-> When the table is fully checked, create an issue titled  
-> **“Phase-1 Complete – proceed to Data Collection”** and assign it to the team lead.  
+> When the table is fully checked, create an issue titled
+> **“Phase-1 Complete – proceed to Data Collection”** and assign it to the team lead.
 > Only then move on to Phase-2.
 
 ---
@@ -302,3 +342,7 @@ rm -rf .venv            # nuke the virtual-env if you need a fresh start
 ```
 
 ---
+
+```
+
+```

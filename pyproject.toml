@@ -32,6 +32,14 @@ dependencies = [
   "great_expectations",  # only if you plan to use --gx flag
   "scikit-learn>=1.4",
   "category-encoders>=2.6"
+  "pytest>=7.0",
+  "pytest-cov",
+  "flake8",
+  "black",
+  "mypy",
+  "statsmodels>=0.14",
+  "pingouin>=0.5",
+  "ydata-profiling>=4.6"
 ]
 
 # — Optional extras  -----------------------------------------------------------

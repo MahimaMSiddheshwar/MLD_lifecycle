@@ -143,3 +143,57 @@ stages:
       - artefacts/model.onnx
     outs:
       - deploy/last_deploy.txt
+
+  stages:
+    ingest:
+      cmd: python -m Data_Ingestion.omni_cli ${params.collect.args}
+      deps:
+        - src/Data_Ingestion/data_collector.py
+      outs:
+        - data/raw/users.csv
+    prepare:
+      cmd: python -m Data_Cleaning.data_preparation --out data/interim/clean.parquet
+      deps:
+        - data/raw/users.csv
+        - src/Data_Cleaning/data_preparation.py
+      outs:
+        - data/interim/clean.parquet
+    eda:
+      cmd: python -m Data_Analysis.EDA --mode all --profile
+      deps:
+        - data/interim/clean.parquet
+        - src/Data_Analysis/EDA.py
+      outs:
+        - reports/eda/univariate_summary.csv
+        - reports/eda/bivariate_summary.csv
+        # etc…
+    select:
+      cmd:
+        python -m data_analysis.feature_selection --in data/interim/clean.parquet \
+        --target ${params.target} --out data/filtered/clean_filtered.parquet
+      deps:
+        - data/interim/clean.parquet
+        - src/data_analysis/feature_selection.py
+      outs:
+        - data/filtered/clean_filtered.parquet
+    featurize:
+      cmd:
+        python -m Feature_Engineering.feature_engineering --data data/filtered/clean_filtered.parquet \
+        --target ${params.target}
+      deps:
+        - data/filtered/clean_filtered.parquet
+        - src/Feature_Engineering/feature_engineering.py
+      outs:
+        - models/preprocessor.joblib
+    split_baseline:
+      cmd: python -m Data_Cleaning.split_and_baseline --target ${params.target} --seed ${params.split.seed} --stratify
+      deps:
+        - models/preprocessor.joblib
+        - data/processed/scaled.parquet
+        - src/Data_Cleaning/split_and_baseline.py
+      outs:
+        - data/splits/train.parquet
+        - data/splits/val.parquet
+        - data/splits/test.parquet
+        - reports/baseline/baseline_metrics.json
+        - models/preprocessor_manifest.json
