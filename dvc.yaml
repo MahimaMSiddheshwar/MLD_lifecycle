@@ -1,72 +1,134 @@
-# dvc.yaml ─ orchestrates the entire MLDLC
-#   • every stage has: cmd, deps (code + data), outs/metrics/plots
-#   • params live in params.yaml   (hyper-params, paths, target column, etc.)
-#   • large artefacts are pushed to the DVC remote, NOT Git
-# -------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# dvc.yaml ─ Entire MLDLC pipeline (with Probabilistic Analysis)
+# ------------------------------------------------------------------------------
 
 stages:
-  # ───────────────────────── PHASE-2 · DATA COLLECTION ──────────────────
+  # ────────────────────── PHASE-2 · DATA COLLECTION ───────────────────────────
   collect:
-    cmd: python -m data_ingest.omni_cli ${params:collect.args}
+    cmd: |
+      python -m data_ingest.omni_cli ${params.collect.args}
     deps:
-      - src/data_ingest/ # all collector code
-      - params.yaml # holds URL / DSN / tokens (never plaintext)
+      - src/data_ingest/data_collector.py
+      - src/data_ingest/omni_cli.py
+      - params.yaml
     outs:
-      - data/raw/ # immutable snapshot (versioned in DVC)
+      - data/raw/ # immutable snapshot(s)
 
-  # ───────────────────────── PHASE-3 · DATA PREP ────────────────────────
+  # ────────────────────── PHASE-3 · DATA PREPARATION ─────────────────────────
   prepare:
-    cmd: python -m ml_pipeline.prepare ${params:prepare.args}
+    cmd: |
+      python -m ml_pipeline.prepare \
+        ${params.prepare.args}
     deps:
-      - data/raw/
+      - data/raw/ # any raw files used in params
       - src/ml_pipeline/prepare.py
       - params.yaml
     outs:
-      - data/interim/clean.parquet
-      - data/processed/scaled.parquet
+      - data/interim/clean.parquet # cleaned data
+      - data/processed/scaled.parquet # scaled/imputed data
     metrics:
       - reports/lineage/prep_manifest.json:
-          cache: false # tiny JSON stays in Git
+          cache: false
 
-  # ───────────────────────── PHASE-4 · EDA  (core + adv) ────────────────
+  # ────────────────────── PHASE-4 · CORE EDA ─────────────────────────────────
   eda_core:
-    cmd: python -m Data_Analysis.EDA \
-      --mode all --target ${params:target}
+    cmd: |
+      python -m Data_Analysis.EDA \
+        --mode all \
+        --data=data/interim/clean.parquet \
+        --target=${params.target}
     deps:
       - data/interim/clean.parquet
       - src/Data_Analysis/EDA.py
       - params.yaml
     outs-persist:
-      - reports/eda/ # keep plots under version control
+      - reports/eda/ # core EDA CSVs/PNGs collected here
 
+  # ────────────────────── PHASE-4 · ADVANCED EDA ──────────────────────────────
   eda_adv:
-    cmd: python -m Data_Analysis.EDA_advance
+    cmd: |
+      python -m Data_Analysis.EDA_advance \
+        --data=data/interim/clean.parquet \
+        --target=${params.target}
     deps:
       - data/interim/clean.parquet
       - src/Data_Analysis/EDA_advance.py
+      - params.yaml
     outs-persist:
-      - reports/eda/advanced/
+      - reports/eda/advanced/ # advanced EDA outputs
 
-  # ───────────────────────── PHASE-4½ · FEATURE SELECTION ───────────────
+  # ──────────────── PHASE-4½ · PROBABILISTIC ANALYSIS ─────────────────────────
+  prob_analysis:
+    cmd: |
+      python -m data_analysis.probabilistic_analysis \
+        --data=data/interim/clean.parquet \
+        --target=${params.target} \
+        --impute_method=${params.probabilistic.impute_method} \
+        ${params.probabilistic.do_pit:+--do_pit} \
+        ${params.probabilistic.do_quantile:+--do_quantile} \
+        ${params.probabilistic.do_copula:+--do_copula}
+    deps:
+      - data/interim/clean.parquet
+      - src/data_analysis/probabilistic_analysis.py
+      - src/data_analysis/probabilistic_analysis.py # your class definition
+      - params.yaml
+    outs:
+      - reports/probabilistic/ # distributions.json, entropy.csv, mutual_info.csv, etc.
+    metrics:
+      - reports/probabilistic/distributions.json:
+          cache: false
+      - reports/probabilistic/entropy.csv:
+          cache: false
+      - reports/probabilistic/mutual_info.csv:
+          cache: false
+
+  # ────────────────── PHASE-4½ · FEATURE SELECTION & EARLY SPLIT ───────────────
   feat_select:
-    cmd: python -m Feature_Selection.feature_select \
-      --data data/processed/scaled.parquet \
-      --target ${params:target}
+    cmd: |
+      python -m Feature_Selection.feature_select \
+        --data=data/processed/scaled.parquet \
+        --target=${params.target} \
+        ${params.feature_selection.args}
     deps:
       - data/processed/scaled.parquet
       - src/Feature_Selection/feature_select.py
+      - params.yaml
     outs:
       - data/processed/selected.parquet
     metrics:
       - reports/feature/feature_audit.json:
           cache: false
 
-  # ───────────────────────── PHASE-5 · FEATURE ENGINEERING ──────────────
+  split_baseline:
+    cmd: |
+      python -m Data_Cleaning.split_and_baseline \
+        --data=data/processed/selected.parquet \
+        --target=${params.target} \
+        --seed=${params.split.seed} \
+        --stratify=${params.split.stratify} \
+        --oversample=${params.split.oversample}
+    deps:
+      - data/processed/selected.parquet
+      - src/Data_Cleaning/split_and_baseline.py
+      - models/preprocessor.joblib
+      - params.yaml
+    outs:
+      - data/splits/train.parquet
+      - data/splits/val.parquet
+      - data/splits/test.parquet
+      - data/splits/split_manifest.json
+      - models/preprocessor_manifest.json
+    metrics:
+      - reports/baseline/baseline_metrics.json:
+          cache: false
+
+  # ───────────────────── PHASE-5 · FEATURE ENGINEERING ────────────────────────
   feat_engineer:
-    cmd: python -m Feature_Engineering.feature_engineering \
-      --data data/processed/selected.parquet \
-      --target ${params:target} \
-      ${params:feature.args}
+    cmd: |
+      python -m Feature_Engineering.feature_engineering \
+        --data=data/processed/selected.parquet \
+        --target=${params.target} \
+        ${params.feature_engineering.args}
     deps:
       - data/processed/selected.parquet
       - src/Feature_Engineering/feature_engineering.py
@@ -78,27 +140,37 @@ stages:
       - reports/feature/feature_audit.json:
           cache: false
 
-  # ───────────────────────── PHASE-5½ · SPLIT & BASELINE ────────────────
-  split_baseline:
-    cmd: python -m Data_Cleaning.split_and_baseline \
-      --target ${params:target} --seed ${params:split.seed} --stratify
+  # ───────────────────── PHASE-5½ · BASELINE ONLY (TRAIN vs. TEST) ────────────
+  baseline:
+    cmd: |
+      python -m Data_Cleaning.split_and_baseline \
+        --baseline-only \
+        --train=data/splits/train.parquet \
+        --test=data/splits/test.parquet \
+        --target=${params.target}
     deps:
-      - data/processed/selected.parquet # **never** touch test data later
+      - data/splits/train.parquet
+      - data/splits/test.parquet
       - models/preprocessor.joblib
       - src/Data_Cleaning/split_and_baseline.py
+      - params.yaml
     outs:
-      - data/splits/ # train / val / test parquet
+      - reports/baseline/baseline_metrics.json
       - models/preprocessor_manifest.json
-    metrics:
-      - reports/baseline/baseline_metrics.json:
-          cache: false
 
-  # ───────────────────────── PHASE-6 · TRAIN + TUNE ─────────────────────
+  # ───────────────────── PHASE-6 · MODEL TRAINING & TUNING ─────────────────────
   train:
-    cmd: python -m model.train --config params.yaml
+    cmd: |
+      python -m model.train \
+        --train=data/splits/train.parquet \
+        --val=data/splits/val.parquet \
+        --test=data/splits/test.parquet \
+        --preprocessor=models/preprocessor.joblib \
+        --config=params.yaml
     deps:
       - data/splits/train.parquet
       - data/splits/val.parquet
+      - data/splits/test.parquet
       - models/preprocessor.joblib
       - src/model/train.py
       - params.yaml
@@ -113,13 +185,18 @@ stages:
           x: epoch
           y: loss
 
-  # ───────────────────────── PHASE-7 · EVALUATE ─────────────────────────
+  # ───────────────────── PHASE-7 · EVALUATION (ON TEST SET) ───────────────────
   evaluate:
-    cmd: python -m model.evaluate --config params.yaml
+    cmd: |
+      python -m model.evaluate \
+        --test=data/splits/test.parquet \
+        --model=models/model.pkl \
+        --config=params.yaml
     deps:
       - data/splits/test.parquet
       - models/model.pkl
       - src/model/evaluate.py
+      - params.yaml
     metrics:
       - reports/metrics/test_metrics.json:
           cache: false
@@ -127,73 +204,42 @@ stages:
       - reports/metrics/roc_curve.csv:
           template: simple
 
-  # ───────────────────────── PHASE-8 · PACKAGE ──────────────────────────
+  # ───────────────────── PHASE-8 · PACKAGE & EXPORT ───────────────────────────
   package:
-    cmd: python -m model.package --model models/model.pkl
+    cmd: |
+      python -m model.package \
+        --model=models/model.pkl \
+        --out=artefacts/model.onnx
     deps:
       - models/model.pkl
       - src/model/package.py
+      - params.yaml
     outs:
       - artefacts/model.onnx
 
-  # ───────────────────────── PHASE-9 · DEPLOY (optional) ────────────────
+  # ───────────────────── PHASE-9 · DEPLOY (OPTIONAL) ──────────────────────────
   deploy:
-    cmd: bash deploy/push_to_registry.sh artefacts/model.onnx
+    cmd: |
+      bash deploy/push_to_registry.sh artefacts/model.onnx
     deps:
       - artefacts/model.onnx
+      - deploy/push_to_registry.sh
     outs:
       - deploy/last_deploy.txt
+# ─────────────────────────────────────────────────────────────────────────────
 
-  stages:
-    ingest:
-      cmd: python -m Data_Ingestion.omni_cli ${params.collect.args}
-      deps:
-        - src/Data_Ingestion/data_collector.py
-      outs:
-        - data/raw/users.csv
-    prepare:
-      cmd: python -m Data_Cleaning.data_preparation --out data/interim/clean.parquet
-      deps:
-        - data/raw/users.csv
-        - src/Data_Cleaning/data_preparation.py
-      outs:
-        - data/interim/clean.parquet
-    eda:
-      cmd: python -m Data_Analysis.EDA --mode all --profile
-      deps:
-        - data/interim/clean.parquet
-        - src/Data_Analysis/EDA.py
-      outs:
-        - reports/eda/univariate_summary.csv
-        - reports/eda/bivariate_summary.csv
-        # etc…
-    select:
-      cmd:
-        python -m data_analysis.feature_selection --in data/interim/clean.parquet \
-        --target ${params.target} --out data/filtered/clean_filtered.parquet
-      deps:
-        - data/interim/clean.parquet
-        - src/data_analysis/feature_selection.py
-      outs:
-        - data/filtered/clean_filtered.parquet
-    featurize:
-      cmd:
-        python -m Feature_Engineering.feature_engineering --data data/filtered/clean_filtered.parquet \
-        --target ${params.target}
-      deps:
-        - data/filtered/clean_filtered.parquet
-        - src/Feature_Engineering/feature_engineering.py
-      outs:
-        - models/preprocessor.joblib
-    split_baseline:
-      cmd: python -m Data_Cleaning.split_and_baseline --target ${params.target} --seed ${params.split.seed} --stratify
-      deps:
-        - models/preprocessor.joblib
-        - data/processed/scaled.parquet
-        - src/Data_Cleaning/split_and_baseline.py
-      outs:
-        - data/splits/train.parquet
-        - data/splits/val.parquet
-        - data/splits/test.parquet
-        - reports/baseline/baseline_metrics.json
-        - models/preprocessor_manifest.json
+# Notes on Usage:
+#
+#  • To run the entire pipeline from scratch (or to reproduce any downstream stage),
+#      > dvc repro
+#
+#  • To run just a specific stage, e.g. Probabilistic Analysis only:
+#      > dvc repro prob_analysis
+#
+#  • To run through Feature Selection & Splitting (skipping EDA + Probabilistic):
+#      > dvc repro feat_select split_baseline
+#
+#  • To train a new model after changing code, without re‐running EDA/probabilistic/etc:
+#      > dvc repro train evaluate package
+#
+#  • Make sure `params.yaml` contains all referenced keys (see next section).
