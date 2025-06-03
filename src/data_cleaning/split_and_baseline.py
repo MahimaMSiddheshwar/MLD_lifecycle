@@ -1,3 +1,23 @@
+# 1. **Simplify the “oversample” logic**
+#    In `SplitAndBaseline.split_data` you check:
+
+#    ```python
+#    if self.oversample and y.dtype.kind not in "if":
+#        X_tr, y_tr = …
+#        X_tr, y_tr = SMOTE(…).fit_resample(X_tr, y_tr)
+#        train = pd.concat([X_tr, y_tr], axis=1)
+#    ```
+
+#    - **Issue:** `y.dtype.kind not in "if"` means “oversample only if `y` is _not_ numeric,” but that’s backwards. If it’s classification, `y.dtype.kind` would usually be `“i”` (integer), so `“i” not in “if”` is false → no oversample.
+#    - **Fix:** Flip that condition:
+
+#      ```python
+#      if self.oversample and y.dtype.kind in {"O","i","b"}:  # or simply presence of .nunique() <= 2
+#          …
+#      ```
+
+#    - Or better yet, explicitly require `--oversample` only for classification tasks and error out if used on continuous targets.
+
 from __future__ import annotations
 import argparse
 import json
@@ -15,19 +35,10 @@ import joblib
 
 
 class SplitAndBaseline:
-    """
-    Orchestrates Dataset Partition & Baseline Benchmarking (Phase 5½):
-    5·0 split_data()
-    5·1 stratify_or_group()
-    5·2 build_baseline()
-    5·3 sanity_checks()
-    5·4 freeze_preprocessor()
-    """
-
     def __init__(self,
                  target: str,
                  seed: int = 42,
-                 stratify: bool = False,
+                 stratify: bool = True,
                  oversample: bool = False):
         self.target = target
         self.seed = seed
@@ -49,10 +60,6 @@ class SplitAndBaseline:
         self.df = pd.read_parquet(self.PROC)
 
     def split_data(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """
-        5·0 + 5·1: Create train/val/test splits (80/10/10),
-        stratified if requested. Optionally SMOTE on train only.
-        """
         y = self.df[self.target]
         stratify_key = y if self.stratify else None
 

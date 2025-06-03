@@ -237,3 +237,105 @@ if __name__ == "__main__":
     ap.add_argument("--pairplots", action="store_true",
                     help="heavy pair-plots & heat-map")
     run(**vars(ap.parse_args()))
+
+
+class ExploratoryDataAnalysis:
+    """
+    Section 3: Exploratory Data Analysis (EDA).
+    Provides methods to summarize data and detect potential issues or insights.
+    """
+
+    def __init__(self):
+        """Initialize EDA stage."""
+        self.report = {}
+
+    def analyze(self, df: pd.DataFrame, target_col: str = None):
+        """
+        Analyze the dataset and populate a report with summary statistics.
+        If target_col is provided, include target distribution and correlations.
+        :param df: Input DataFrame.
+        :param target_col: Optional target column name for analysis.
+        :return: The input DataFrame (unchanged), for pipeline chaining.
+        """
+        # Basic dataset shape and types
+        num_rows, num_cols = df.shape
+        dtypes = df.dtypes.apply(lambda x: x.name).to_dict()
+        self.report['num_rows'] = num_rows
+        self.report['num_cols'] = num_cols
+        self.report['column_types'] = dtypes
+
+        # Missing value summary
+        missing_counts = df.isna().sum().to_dict()
+        self.report['missing_values'] = missing_counts
+
+        # Target column analysis if provided
+        if target_col:
+            if target_col not in df.columns:
+                raise ValueError(
+                    f"target_col '{target_col}' not in DataFrame columns")
+            target = df[target_col]
+            # Distribution of target
+            if target.nunique() <= 20:
+                # likely categorical or discrete
+                target_counts = target.value_counts(dropna=False).to_dict()
+                self.report['target_distribution'] = target_counts
+            else:
+                # likely continuous
+                self.report['target_mean'] = target.mean()
+                self.report['target_std'] = target.std()
+                self.report['target_min'] = target.min()
+                self.report['target_max'] = target.max()
+
+        # Basic statistics for numeric features
+        numeric_cols = df.select_dtypes(include=np.number).columns
+        if len(numeric_cols) > 0:
+            stats = df[numeric_cols].describe().to_dict()
+            self.report['numeric_summary'] = stats
+
+        # Categorical feature summary (top categories)
+        categorical_cols = [col for col in df.columns if df[col].dtype == object or str(
+            df[col].dtype).startswith('category')]
+        cat_summary = {}
+        for col in categorical_cols:
+            top_vals = df[col].value_counts(dropna=False).head(5).to_dict()
+            cat_summary[col] = top_vals
+        if cat_summary:
+            self.report['categorical_summary'] = cat_summary
+
+        # Correlation with target (for numeric features)
+        if target_col and target_col in numeric_cols:
+            # if target is numeric, compute Pearson correlation for numeric features
+            correlations = {}
+            for col in numeric_cols:
+                if col == target_col:
+                    continue
+                correlations[col] = df[col].corr(df[target_col])
+            self.report['correlation_with_target'] = correlations
+        elif target_col:
+            # if target is categorical (classification), compute a simple variance ratio for numeric features
+            correlations = {}
+            target = df[target_col]
+            if target.nunique() > 1:
+                for col in numeric_cols:
+                    # use an ANOVA-like variance ratio as correlation measure
+                    if df[col].nunique() > 0:
+                        overall_var = np.var(df[col].dropna().values)
+                        within_var = 0
+                        n_total = 0
+                        for val in target.unique():
+                            grp = df[target == val][col].values
+                            n = len(grp)
+                            n_total += n
+                            if n > 1:
+                                within_var += n * np.var(grp)
+                        if n_total > 0:
+                            within_var = within_var / n_total
+                            corr_ratio = 1 - within_var/overall_var if overall_var != 0 else 0
+                        else:
+                            corr_ratio = 0
+                        correlations[col] = corr_ratio
+                self.report['numeric_feature_correlation_ratio_with_target'] = correlations
+            # (Categorical vs categorical correlation not implemented for brevity)
+
+        # Return the original DataFrame to allow chaining
+        return df

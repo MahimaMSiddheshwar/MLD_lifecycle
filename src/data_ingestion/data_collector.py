@@ -27,7 +27,7 @@ and **optional Great Expectations validation**.
 """
 
 from __future__ import annotations
-import contextlib, hashlib, io, json, logging, os, re, time, pandas as pd
+import contextlib, hashlib, io, json, logging, pathlib as Path, os, re, time, pandas as pd
 
 # ─── optional / lazy imports ────────────────────────────────────
 with contextlib.suppress(ImportError):
@@ -38,7 +38,7 @@ with contextlib.suppress(ImportError):
     from sqlalchemy import create_engine
     from pymongo import MongoClient
     import paho.mqtt.client as mqtt
-with contextlib.suppress(ImportError):
+    from datetime import datetime
     import great_expectations as ge                      # ← NEW
 
 # ─── logging set-up ─────────────────────────────────────────────
@@ -115,7 +115,6 @@ class OmniCollector:
     # ── 2A  Flat-file / Object-storage ─────────────────────────
     def from_file(self, path: str, **storage_opts) -> pd.DataFrame:
         if path.startswith("s3://"):
-            import boto3
             bucket, key = path.split("s3://", 1)[1].split("/", 1)
             obj = boto3.client("s3").get_object(
                 Bucket=bucket, Key=key, **storage_opts)
@@ -127,13 +126,22 @@ class OmniCollector:
             df = pd.read_parquet(buffer)
         elif suffix in {".xlsx", ".xls"}:
             df = pd.read_excel(buffer)
-        else:
+        elif suffix in {".csv"}:
             df = pd.read_csv(buffer)
+        elif suffix in {".tsv"}:
+            df = pd.read_tsv(buffer)
+        else:
+            # Extend for other source types as needed (SQL, etc.)
+            raise ValueError(f"Unsupported source_type: {self.source_type}")
 
         if self.pii_mask:
             df = _mask(df)
         self._validate(df, "flat")
         _audit(df, f"flat:{Path(path).name}")
+
+        # Basic verification
+        if df is None or df.empty:
+            raise ValueError("Loaded data is empty.")
         return df
 
     # ── 2B  SQL ────────────────────────────────────────────────
@@ -157,7 +165,6 @@ class OmniCollector:
 
     # ── 2D  REST / GraphQL ─────────────────────────────────────
     def from_rest(self, url: str, *, params=None, headers=None):
-        import requests
         payload = requests.get(
             url, params=params, headers=headers, timeout=20).json()
         df = pd.json_normalize(payload)

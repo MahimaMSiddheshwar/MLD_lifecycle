@@ -1,6 +1,10 @@
 # > * Added `--target` to CLI, so the code knows which column is the target (used later in balancing).
-# > * Added an explicit random seed for SMOTE.
 # > * Moved inline Pandera schema into `default_schema`, so users can override if necessary.
+
+# 3. **3G Feature Pruning**
+#    - In your Table of Contents under “Phase 3 – Data Preparation,” you list a “3G Feature Pruning (High NaN / High Corr).” But in section 3 you never mention “3G.”
+#    - **Fix:** Either implement “3G” in `data_preparation.py` (e.g. drop features with `df.isna().mean() > 0.5` or `|corr(x,y)| > 0.95`), or remove `3G` from the TOC.
+
 
 from __future__ import annotations
 import pyjanitor as jan
@@ -42,6 +46,18 @@ with warnings.catch_warnings():
     except ModuleNotFoundError:
         GX_OK = False
 
+
+def plt_bytes():
+    import matplotlib.pyplot as plt
+    import io
+    bio = io.BytesIO()
+    plt.savefig(bio, format="png")
+    bio.seek(0)
+    buf = bio.read()
+    plt.close()
+    return buf
+
+
 # ───────── config & paths ────────────────────────────────────
 RAW = Path("data/raw/combined.parquet")
 INT = Path("data/interim/clean.parquet")
@@ -70,6 +86,94 @@ schema = pa.DataFrameSchema({
 # ╔══════════════════════════════════════════════════════════╗
 # ║                    pipeline class                        ║
 # ╚══════════════════════════════════════════════════════════╝
+
+
+class DataCleaning:
+    """
+    Section 2: Data Cleaning.
+    Handles missing values, duplicates, and basic data sanity checks/cleaning.
+    """
+
+    def __init__(self,
+                 missing_values_strategy: str = 'mean',
+                 fill_value: float = None,
+                 drop_threshold: float = None):
+        """
+        Initialize DataCleaning.
+        :param missing_values_strategy: Strategy for handling missing values ('mean', 'median', 'mode', 'drop', or 'constant').
+        :param fill_value: If strategy is 'constant', use this value to fill missing.
+        :param drop_threshold: If provided, drop any columns with missing fraction > drop_threshold (0-1 range).
+        """
+        self.missing_values_strategy = missing_values_strategy
+        self.fill_value = fill_value
+        self.drop_threshold = drop_threshold
+
+    def clean(self, df: pd.DataFrame, target_col: str = None) -> pd.DataFrame:
+        """
+        Clean the dataframe by handling missing values and duplicates.
+        :param df: Input DataFrame.
+        :param target_col: Optional name of target column. If specified, treat it separately (e.g., drop rows with missing target).
+        :return: Cleaned DataFrame.
+        """
+        df_clean = df.copy()
+        # Remove duplicate rows
+        df_clean.drop_duplicates(inplace=True)
+
+        # Drop rows where target is missing (if target_col specified)
+        if target_col and df_clean[target_col].isna().any():
+            df_clean = df_clean[~df_clean[target_col].isna()]
+
+        # Drop columns with too many missing values
+        if self.drop_threshold is not None:
+            missing_frac = df_clean.isna().mean()
+            cols_to_drop = missing_frac[missing_frac >
+                                        self.drop_threshold].index
+            df_clean.drop(columns=cols_to_drop, inplace=True)
+
+        # Fill or drop missing values for each column
+        for col in df_clean.columns:
+            if col == target_col:
+                continue  # skip target for imputation
+            if df_clean[col].isna().any():
+                if self.missing_values_strategy == 'drop':
+                    # drop any rows with missing in this column
+                    df_clean = df_clean[~df_clean[col].isna()]
+                    continue
+                if df_clean[col].dtype == object or str(df_clean[col].dtype).startswith('category'):
+                    # Categorical column missing handling
+                    if self.missing_values_strategy in ['mode', 'mean', 'median']:
+                        # use mode for categorical
+                        mode_val = df_clean[col].mode(dropna=True)
+                        fill_val = mode_val.iloc[0] if not mode_val.empty else None
+                    elif self.missing_values_strategy == 'constant':
+                        fill_val = self.fill_value
+                    else:
+                        # default for any other unspecified strategy: use mode
+                        mode_val = df_clean[col].mode(dropna=True)
+                        fill_val = mode_val.iloc[0] if not mode_val.empty else None
+                    df_clean[col].fillna(fill_val, inplace=True)
+                else:
+                    # Numeric column missing handling
+                    if self.missing_values_strategy == 'mean':
+                        fill_val = df_clean[col].mean()
+                    elif self.missing_values_strategy == 'median':
+                        fill_val = df_clean[col].median()
+                    elif self.missing_values_strategy == 'mode':
+                        mode_val = df_clean[col].mode(dropna=True)
+                        fill_val = mode_val.iloc[0] if not mode_val.empty else df_clean[col].mean(
+                        )
+                    elif self.missing_values_strategy == 'constant':
+                        fill_val = self.fill_value
+                    else:
+                        raise ValueError(
+                            f"Unknown missing_values_strategy: {self.missing_values_strategy}")
+                    df_clean[col].fillna(fill_val, inplace=True)
+
+        # Reset index after dropping rows
+        df_clean.reset_index(drop=True, inplace=True)
+        return df_clean
+
+
 class DataPreparer:
     def __init__(self, cfg: dict):          # cfg assembled from CLI
         self.cfg = cfg
@@ -114,7 +218,11 @@ class DataPreparer:
             self.df[c].fillna(self.df[c].mode(dropna=True)[0], inplace=True)
 
         log.info("impute done (missing=%d)", self.df.isna().sum().sum())
-
+        # dc = DataCleaning(missing_values_strategy=self.cfg["missing_values_strategy"],
+        #                   fill_value=self.cfg.get("fill_value"),
+        #                   drop_threshold=self.cfg.get("drop_miss"))
+        # self.df = dc.clean(self.df, target_col=self.cfg.get("target"))
+        # log.info("cleaned missing values → %s", self.df.shape)
         # drop-missing threshold
         if self.cfg["drop_miss"] is not None:
             thresh = self.cfg["drop_miss"]
@@ -124,22 +232,6 @@ class DataPreparer:
             if drops:
                 (LINE / "drop_missing.json").write_text(json.dumps(drops))
                 log.info("dropped %d cols for >%0.2f NaNs", len(drops), thresh)
-
-    # ── 3C  duplicates & constant columns -------------------
-    def dedup_prune(self):
-        if self.cfg["dedup"]:
-            before = len(self.df)
-            self.df.drop_duplicates(subset=self.cfg["dedup"], inplace=True)
-            log.info("dedup → %d rows (-%d)",
-                     len(self.df), before-len(self.df))
-
-        const_thresh = self.cfg["prune_const"]
-        nunique = self.df.nunique(dropna=False)/len(self.df)
-        const = nunique[nunique > const_thresh].index
-        if len(const):
-            self.df.drop(columns=const, inplace=True)
-            (LINE / "drop_const.json").write_text(json.dumps(const.tolist()))
-            log.info("pruned %d quasi-constant cols", len(const))
 
     # ── 3C  outlier treatment --------------------------------
     def treat_outliers(self):
@@ -183,20 +275,7 @@ class DataPreparer:
 
         log.info("scaled with %s", scaler_name)
 
-    # ── 3E  rebalance ----------------------------------------
-    def rebalance(self):
-        if not self.cfg["balance"]:
-            return
-        X = self.df.drop(columns="is_churn")
-        y = self.df["is_churn"]
-        sampler = SMOTE(
-            random_state=0) if self.cfg["balance"] == "smote" else NearMiss()
-        Xb, yb = sampler.fit_resample(X, y)
-        self.df = pd.concat([Xb, yb], axis=1)
-        log.info("rebalance %s → pos rate %0.2f",
-                 self.cfg["balance"], self.df.is_churn.mean())
-
-    # ── 3G  high-corr pruning --------------------------------
+    # ── 3E  high-corr pruning --------------------------------
     def drop_correlated(self):
         thr = self.cfg["drop_corr"]
         if thr is None:
@@ -210,7 +289,23 @@ class DataPreparer:
             (LINE/"drop_corr.json").write_text(json.dumps(to_drop))
             log.info("dropped %d highly-corr cols (>%0.2f)", len(to_drop), thr)
 
-    # ── 3F  save versions ------------------------------------
+    # ── 3F  duplicates & constant columns -------------------
+    def dedup_prune(self):
+        if self.cfg["dedup"]:
+            before = len(self.df)
+            self.df.drop_duplicates(subset=self.cfg["dedup"], inplace=True)
+            log.info("dedup → %d rows (-%d)",
+                     len(self.df), before-len(self.df))
+
+        const_thresh = self.cfg["prune_const"]
+        nunique = self.df.nunique(dropna=False)/len(self.df)
+        const = nunique[nunique > const_thresh].index
+        if len(const):
+            self.df.drop(columns=const, inplace=True)
+            (LINE / "drop_const.json").write_text(json.dumps(const.tolist()))
+            log.info("pruned %d quasi-constant cols", len(const))
+
+    # ── 3G  save versions ------------------------------------
     def save(self):
         INT.parent.mkdir(parents=True, exist_ok=True)
         PROC.parent.mkdir(parents=True, exist_ok=True)
@@ -237,7 +332,6 @@ class DataPreparer:
         self.dedup_prune()
         self.treat_outliers()
         self.transform()
-        self.rebalance()
         self.drop_correlated()
         self.save()
 
@@ -285,18 +379,6 @@ def cli():
         gx=args["gx"],
     )
     DataPreparer(cfg).run()
-
-
-# helper to grab current matplotlib figure as bytes (used once above)
-def plt_bytes():
-    import matplotlib.pyplot as plt
-    import io
-    bio = io.BytesIO()
-    plt.savefig(bio, format="png")
-    bio.seek(0)
-    buf = bio.read()
-    plt.close()
-    return buf
 
 
 if __name__ == "__main__":
