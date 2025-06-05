@@ -18,11 +18,10 @@ Adds:
 from __future__ import annotations
 import argparse
 import json
-import math
 import joblib
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Callable, Any
+from typing import List, Dict, Callable
 
 import numpy as np
 import pandas as pd
@@ -38,9 +37,8 @@ from sklearn.feature_extraction.text import (
     TfidfVectorizer, CountVectorizer, HashingVectorizer
 )
 from sklearn.feature_selection import (
-    VarianceThreshold, mutual_info_classif, mutual_info_regression, f_classif
+    VarianceThreshold, mutual_info_regression, f_classif
 )
-from sklearn.metrics import r2_score
 from sklearn.utils.validation import check_is_fitted
 from category_encoders.target_encoder import TargetEncoder
 from category_encoders.hashing import HashingEncoder

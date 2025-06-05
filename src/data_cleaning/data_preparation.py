@@ -70,7 +70,7 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("prepare")
 
 
-# TODO: Example Pandera schema – override or extend as needed
+# TODO: Example Pandera schema – override as needed
 
 
 schema = pa.DataFrameSchema({
@@ -81,11 +81,6 @@ schema = pa.DataFrameSchema({
     "amount":     pa.Column(pa.Float,  checks=pa.Check.ge(0)),
     "is_churn":   pa.Column(pa.Int,    checks=pa.Check.isin([0, 1]))
 })
-
-
-# ╔══════════════════════════════════════════════════════════╗
-# ║                    pipeline class                        ║
-# ╚══════════════════════════════════════════════════════════╝
 
 
 class DataCleaning:
