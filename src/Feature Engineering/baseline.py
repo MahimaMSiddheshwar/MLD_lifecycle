@@ -1,144 +1,194 @@
+#!/usr/bin/env python3
 """
-split_and_baseline.py ─ Phase 5·½
----------------------------------
-Consumes the frozen splits produced in Phase 4·½,
-calculates a “beat-that” baseline, runs sanity checks,
-and serialises the *final* preprocessing object.
+auto_baseline.py
 
-    python -m Data_Cleaning.split_and_baseline \
-           --target is_churn --oversample
+Automatically fits and evaluates multiple baseline strategies on train/test splits
+without any user intervention.
+
+Usage:
+
+    from auto_baseline import AutoBaseline
+
+    # Assume `train_df` and `test_df` are pandas.DataFrames containing your data,
+    # and `target_col` is the name of the target column.
+
+    baseline = AutoBaseline(target=target_col, verbose=True)
+    results = baseline.run(train_df, test_df)
+
+    # `results` is a dict mapping each baseline name to its metric dict.
+    # When verbose=True, metrics are printed as they’re computed.
 """
-
-from __future__ import annotations
-import argparse
-import json
-import hashlib
-from pathlib import Path
-from datetime import datetime
-from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
+from typing import Dict, Any
+from sklearn.dummy import DummyClassifier, DummyRegressor
 from sklearn.metrics import (
-    accuracy_score, f1_score, mean_absolute_error, r2_score
+    accuracy_score, f1_score, precision_score, recall_score,
+    mean_absolute_error, mean_squared_error, r2_score
 )
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-from imblearn.over_sampling import SMOTE
-import joblib
+import warnings
 
-# ──────────────────────────────────────────────────────────────
-SPLIT_DIR = Path("data/splits")
-PROC_PARQUET = Path("data/processed/scaled.parquet")
-BASELINE_DIR = Path("reports/baseline")
-BASELINE_DIR.mkdir(parents=True, exist_ok=True)
-MODEL_DIR = Path("models")
-MODEL_DIR.mkdir(exist_ok=True)
-
-# ──────────────────────────────────────────────────────────────
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
-class baslineModel:
-    """Phase 5·½ – baseline & pipeline-freeze (no re-splitting)"""
+class AutoBaseline:
+    """
+    Automatically fit & evaluate several common baselines on (train, test).
 
-    def __init__(self, target: str, oversample: bool = False):
+    For regression targets (float dtype):
+      – 'mean_regressor'
+      – 'median_regressor'
+
+    For classification targets (non‐float dtype OR discrete integer):
+      – 'most_frequent'
+      – 'stratified'
+      – 'uniform'
+
+    After fitting each baseline, it computes standard metrics and returns a dict.
+    """
+
+    def __init__(self, target: str, verbose: bool = False):
+        """
+        Parameters
+        ----------
+        target : str
+            Name of the target column.
+        verbose : bool
+            If True, prints each baseline’s metrics as it’s computed.
+        """
         self.target = target
-        self.oversample = oversample
+        self.verbose = verbose
+        self.results: Dict[str, Dict[str, Any]] = {}
 
-        self.train, self.val, self.test = self._load_frozen()
+    def run(self, train_df: pd.DataFrame, test_df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+        """
+        Fit all applicable baselines on train_df, evaluate on test_df, and return metrics.
 
-    # ---------- 5·0 Verify frozen split -----------------------
-    @staticmethod
-    def _checksum(fp: Path) -> str:
-        return hashlib.sha256(fp.read_bytes()).hexdigest()[:12]
+        Returns
+        -------
+        Dict[str, Dict[str, Any]]
+            A mapping from baseline_name → {metric_name: metric_value, …}.
+        """
+        y_train = train_df[self.target]
+        y_test = test_df[self.target]
 
-    def _load_frozen(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        for fn in ["train.parquet", "val.parquet", "test.parquet"]:
-            assert (
-                SPLIT_DIR/fn).exists(), f"missing {fn} – run Phase 4·½ first"
+        # Determine if regression (continuous) vs classification
+        is_regression = pd.api.types.is_float_dtype(y_train.dtype)
 
-        # integrity check – hashes must match manifest
-        manifest_path = SPLIT_DIR/"split_manifest.json"
-        meta: Dict = json.loads(manifest_path.read_text())
-        for fn in ["train.parquet", "val.parquet", "test.parquet"]:
-            hash_now = self._checksum(SPLIT_DIR/fn)
-            hash_manifest = meta["hashes"][fn]
-            assert hash_now == hash_manifest, f"{fn} hash mismatch – do *not* re-split!"
+        if is_regression:
+            self._run_regression_baselines(train_df, test_df, y_train, y_test)
+        else:
+            self._run_classification_baselines(
+                train_df, test_df, y_train, y_test)
 
-        tr = pd.read_parquet(SPLIT_DIR/"train.parquet")
-        va = pd.read_parquet(SPLIT_DIR/"val.parquet")
-        te = pd.read_parquet(SPLIT_DIR/"test.parquet")
+        return self.results
 
-        if self.oversample and tr[self.target].dtype.kind not in "if":
-            X_tr, y_tr = tr.drop(columns=self.target), tr[self.target]
-            X_tr, y_tr = SMOTE(random_state=0).fit_resample(X_tr, y_tr)
-            tr = pd.concat([X_tr, y_tr], axis=1)
+    def _run_regression_baselines(
+        self,
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        y_train: pd.Series,
+        y_test: pd.Series,
+    ):
+        """
+        Fit DummyRegressor strategies: 'mean' and 'median', then evaluate.
+        """
+        X_train = train_df.drop(columns=[self.target])
+        X_test = test_df.drop(columns=[self.target])
 
-        return tr, va, te
+        # 1) Mean regressor
+        dr_mean = DummyRegressor(strategy="mean")
+        dr_mean.fit(X_train, y_train)
+        y_pred_mean = dr_mean.predict(X_test)
 
-    # ---------- 5·1 Baseline model ----------------------------
-    def baseline(self):
-        y_test = self.test[self.target]
+        metrics_mean = {
+            "type": "mean_regressor",
+            "mae": float(mean_absolute_error(y_test, y_pred_mean)),
+            "mse": float(mean_squared_error(y_test, y_pred_mean)),
+            "r2": float(r2_score(y_test, y_pred_mean))
+        }
+        self.results["mean_regressor"] = metrics_mean
+        if self.verbose:
+            print(f"[mean_regressor] MAE={metrics_mean['mae']:.4f}, "
+                  f"MSE={metrics_mean['mse']:.4f}, R2={metrics_mean['r2']:.4f}")
 
-        if y_test.dtype.kind in "if":                         # regression
-            y_pred = np.full_like(
-                y_test, self.train[self.target].mean(), dtype=float)
-            metrics = {
-                "type": "mean_regressor",
-                "mae": mean_absolute_error(y_test, y_pred),
-                "r2":  r2_score(y_test, y_pred)
-            }
-        else:                                                # classification
-            majority = self.train[self.target].mode()[0]
-            y_pred = np.full_like(y_test, majority)
-            metrics = {
-                "type": "majority_class",
-                "majority_class": int(majority),
-                "accuracy": accuracy_score(y_test, y_pred),
-                "f1":       f1_score(y_test, y_pred, zero_division=0)
-            }
+        # 2) Median regressor
+        dr_med = DummyRegressor(strategy="median")
+        dr_med.fit(X_train, y_train)
+        y_pred_med = dr_med.predict(X_test)
 
-        (BASELINE_DIR/"baseline_metrics.json").write_text(json.dumps(metrics, indent=2))
+        metrics_med = {
+            "type": "median_regressor",
+            "mae": float(mean_absolute_error(y_test, y_pred_med)),
+            "mse": float(mean_squared_error(y_test, y_pred_med)),
+            "r2": float(r2_score(y_test, y_pred_med))
+        }
+        self.results["median_regressor"] = metrics_med
+        if self.verbose:
+            print(f"[median_regressor] MAE={metrics_med['mae']:.4f}, "
+                  f"MSE={metrics_med['mse']:.4f}, R2={metrics_med['r2']:.4f}")
 
-    # ---------- 5·2 Sanity checks -----------------------------
-    def sanity(self):
-        dup_idx = set(self.train.index) & set(self.test.index)
-        assert not dup_idx, f"duplicates across splits: {len(dup_idx)}"
+    def _run_classification_baselines(
+        self,
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        y_train: pd.Series,
+        y_test: pd.Series,
+    ):
+        """
+        Fit DummyClassifier strategies: 'most_frequent', 'stratified', 'uniform', then evaluate.
+        """
+        X_train = train_df.drop(columns=[self.target])
+        X_test = test_df.drop(columns=[self.target])
 
-        leaks = [c for c in self.train.columns if c != self.target
-                 and self.train[c].equals(self.train[self.target])]
-        assert not leaks, f"perfect-copy leakage columns: {leaks}"
+        # 1) Most frequent
+        dc_mf = DummyClassifier(strategy="most_frequent", random_state=0)
+        dc_mf.fit(X_train, y_train)
+        y_pred_mf = dc_mf.predict(X_test)
 
-    # ---------- 5·3 Freeze lightweight pre-processor ----------
-    def freeze_preprocessor(self):
-        num_cols = self.train.select_dtypes("number").columns
-        scaler = Pipeline([("std", StandardScaler())]
-                          ).fit(self.train[num_cols])
+        metrics_mf = {
+            "type": "most_frequent",
+            "accuracy": float(accuracy_score(y_test, y_pred_mf)),
+            "f1": float(f1_score(y_test, y_pred_mf, zero_division=0)),
+            "precision": float(precision_score(y_test, y_pred_mf, zero_division=0)),
+            "recall": float(recall_score(y_test, y_pred_mf, zero_division=0))
+        }
+        self.results["most_frequent"] = metrics_mf
+        if self.verbose:
+            print(f"[most_frequent] Acc={metrics_mf['accuracy']:.4f}, "
+                  f"F1={metrics_mf['f1']:.4f}, Prec={metrics_mf['precision']:.4f}, Rec={metrics_mf['recall']:.4f}")
 
-        joblib.dump(scaler, MODEL_DIR/"preprocessor.joblib")
-        sha = baslineModel._checksum(MODEL_DIR/"preprocessor.joblib")
-        (MODEL_DIR/"preprocessor_manifest.json").write_text(
-            json.dumps({"sha256": sha,
-                        "saved": datetime.utcnow().isoformat(timespec="seconds")},
-                       indent=2)
-        )
+        # 2) Stratified
+        dc_strat = DummyClassifier(strategy="stratified", random_state=0)
+        dc_strat.fit(X_train, y_train)
+        y_pred_strat = dc_strat.predict(X_test)
 
-    # ---------- Orchestrator ----------------------------------
-    def run(self):
-        self.baseline()
-        self.sanity()
-        self.freeze_preprocessor()
-        print("✅  Phase 5·½ complete – baseline & pre-processor ready.")
+        metrics_strat = {
+            "type": "stratified",
+            "accuracy": float(accuracy_score(y_test, y_pred_strat)),
+            "f1": float(f1_score(y_test, y_pred_strat, zero_division=0)),
+            "precision": float(precision_score(y_test, y_pred_strat, zero_division=0)),
+            "recall": float(recall_score(y_test, y_pred_strat, zero_division=0))
+        }
+        self.results["stratified"] = metrics_strat
+        if self.verbose:
+            print(f"[stratified] Acc={metrics_strat['accuracy']:.4f}, "
+                  f"F1={metrics_strat['f1']:.4f}, Prec={metrics_strat['precision']:.4f}, Rec={metrics_strat['recall']:.4f}")
 
+        # 3) Uniform (random)
+        dc_unif = DummyClassifier(strategy="uniform", random_state=0)
+        dc_unif.fit(X_train, y_train)
+        y_pred_unif = dc_unif.predict(X_test)
 
-# ──────────────────────────────────────────────────────────────
-def _cli():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--target", required=True, help="target column name")
-    ap.add_argument("--oversample", action="store_true",
-                    help="SMOTE on train fold")
-    baslineModel(**vars(ap.parse_args())).run()
-
-
-if __name__ == "__main__":
-    _cli()
+        metrics_unif = {
+            "type": "uniform",
+            "accuracy": float(accuracy_score(y_test, y_pred_unif)),
+            "f1": float(f1_score(y_test, y_pred_unif, zero_division=0)),
+            "precision": float(precision_score(y_test, y_pred_unif, zero_division=0)),
+            "recall": float(recall_score(y_test, y_pred_unif, zero_division=0))
+        }
+        self.results["uniform"] = metrics_unif
+        if self.verbose:
+            print(f"[uniform] Acc={metrics_unif['accuracy']:.4f}, "
+                  f"F1={metrics_unif['f1']:.4f}, Prec={metrics_unif['precision']:.4f}, Rec={metrics_unif['recall']:.4f}")
