@@ -192,3 +192,25 @@ class AutoBaseline:
         if self.verbose:
             print(f"[uniform] Acc={metrics_unif['accuracy']:.4f}, "
                   f"F1={metrics_unif['f1']:.4f}, Prec={metrics_unif['precision']:.4f}, Rec={metrics_unif['recall']:.4f}")
+
+
+"""
+import pandas as pd
+from auto_baseline import AutoBaseline
+
+# Suppose you already have train_df and test_df:
+# train_df = pd.read_parquet("data/splits/train.parquet")
+# test_df  = pd.read_parquet("data/splits/test.parquet")
+# And your target column is "price" (a float column).
+
+baseline = AutoBaseline(target="price", verbose=True)
+regression_results = baseline.run(train_df, test_df)
+
+# regression_results will be a dict like:
+# {
+#   "mean_regressor": { "type":"mean_regressor", "mae":..., "mse":..., "r2":... },
+#   "median_regressor": { "type":"median_regressor", "mae":..., "mse":..., "r2":... }
+# }
+baseline = AutoBaseline(target="is_churn", verbose=True)
+classification_results = baseline.run(train_df, test_df)
+"""

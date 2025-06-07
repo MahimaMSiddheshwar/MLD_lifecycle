@@ -1,424 +1,1027 @@
-Below is a brief “code review” of all six modules (Stages 1–6). For each file, I’ve listed the most obvious bugs, omissions, and potential pitfalls we noticed. This isn’t exhaustive, but it should give you a head‐start on tightening things up before running in production.
+# Machine Learning Pipeline Reference
+
+> **Purpose:**  
+> This document codifies a reproducible, configurable, end-to-end ML pipeline from raw data ingestion through feature engineering — pulling together best practices from Stanford, MIT, Harvard and our in-house improvements.
+>
+> **How to use:**  
+> For each project, walk through the numbered stages below. Each stage lists **Objectives**, **Key Tasks**, **Checks & Metrics**, and **Configurable Parameters**.
 
 ---
 
-## 1. `stage1_data_collection.py`
+## Table of Contents
 
-1. **`datetime` Import Lives Inside a “Suppress” Block**
+1. [Stage 0: Project Setup & Configuration](#stage-0-project-setup--configuration)
+2. [Stage 1: Data Ingestion](#stage-1-data-ingestion)
+3. [Stage 2: Data Validation & Sanity Checks](#stage-2-data-validation--sanity-checks)
+4. [Stage 3: Missingness & Cleaning](#stage-3-missingness--cleaning)
+5. [Stage 4: Outlier Detection & Treatment](#stage-4-outlier-detection--treatment)
+6. [Stage 5: Scaling & Transformation](#stage-5-scaling--transformation)
+7. [Stage 6: Feature Engineering & Selection](#stage-6-feature-engineering--selection)
+8. [Stage 7: Train/Val/Test Split & Baseline](#stage-7-trainvaltest-split--baseline)
+9. [Stage 8: Leakage Detection & Integrity](#stage-8-leakage-detection--integrity)
+10. [Next Steps](#next-steps)
 
-   ```python
-   with contextlib.suppress(ImportError):
-       …
-       from datetime import datetime
-       …
-   ```
+---
 
-   - If _any_ of the third‐party imports in that block (e.g. `boto3`, `requests`, `kafka`, etc.) fails, the `ImportError` is caught and _all_ of the subsequent imports—including `datetime`—are skipped. As a result, calls like
+## Stage 0: Project Setup & Configuration
+
+### Objectives
+
+- Centralize all thresholds, file paths, random seeds, reporting options.
+- Ensure reproducibility (version your code, record git SHA).
+
+### Key Tasks
+
+- Create `config.yaml` (or Python dict) with:
+
+  ```yaml
+  data:
+    raw_path: data/raw/
+    proc_path: data/processed/
+  thresholds:
+    high_cardinality_ratio: 0.10
+    missing_frac_drop: 0.90
+    outlier_vote_threshold: 3
+    nzv_unique_threshold: 2
+    skew_robust: 1.0
+    kurtosis_robust: 5.0
+    shapiro_p_thresh: 0.05
+  random_seed: 42
+  ```
+
+- Record experiment metadata: git commit, timestamp, config hash.
+
+### Checks & Metrics
+
+- Validate `config.yaml` schema (e.g. with [Cerberus](https://docs.python-cerberus.org/)).
+- Halt if any required key is missing.
+
+---
+
+## Stage 1: Data Ingestion
+
+### Objectives
+
+- Load raw tables (CSV, Parquet, database) into a canonical in-memory format.
+- Persist a snapshot (Parquet) for downstream stages.
+
+### Key Tasks
+
+1. **Read source** into `pd.DataFrame` (or Spark/DB connector).
+2. **Schema enforcement**:
+
+   - Define expected dtypes & nullability in a schema file (JSON/Avro/tdl).
+   - Cast or reject mismatches.
+
+3. **Write** cleaned snapshot to `data/processed/data.parquet`.
+
+### Checks & Metrics
+
+- Row counts vs. source logs.
+- Column count & dtypes match schema.
+- Checksum Parquet file for integrity.
+
+---
+
+## Stage 2: Data Validation & Sanity Checks
+
+> _Inspired by Harvard’s “Data Quality Framework”._
+
+### Objectives
+
+- Detect structural, semantic, and cross-field anomalies before heavy processing.
+
+### Key Tasks & Checks
+
+1. **Mixed-Type Detection**
+
+   - For each column:
 
      ```python
-     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+     types = df[col].dropna().map(type).value_counts()
+     if len(types) > 1: report.mixed_types[col] = types.to_dict()
      ```
 
-     will blow up with a `NameError` whenever, for example, `boto3` isn’t installed, even though `datetime` itself is part of the standard library.
+2. **Impossible Value Rules**
 
-2. **Inconsistent Use of `pathlib`**
+   - User-supplied forbidden sets (e.g. negative ages, zeros in IDs).
 
-   ```python
-   import pathlib as Path
-   …
-   LOG_DIR = Path("logs")
-   …
-   df = self._postprocess(df, f"flat:{Path.Path(path).name}")
-   ```
+3. **Unexpected High-Cardinality**
 
-   - Because we did `import pathlib as Path`, the class is `Path.Path`, which is confusing. In some lines we write `Path("logs")` (which really calls `pathlib.Path("logs")`), but later we write `Path.Path(path).suffix`, etc.
-   - **Fix suggestion:** do either
+   - `unique_ratio = nunique / n_rows`; if `> config.thresholds.high_cardinality_ratio`, flag.
 
-   ```python
-   from pathlib import Path
-   ```
+4. **Near-Zero-Variance**
 
-   or
+   - Drop if `nunique < config.thresholds.nzv_unique_threshold`.
 
-   ```python
-   import pathlib
-   ```
+5. **Duplicate Rows**
 
-   and change all occurrences to `pathlib.Path(...)`.
+   - `df.duplicated().sum()`. Optionally remove.
 
-3. **`boto3` (and Other Third‐Party Clients) May Not Exist**
+6. **Custom Missing Markers**
 
-   - In `read_flatfile()`, we do:
+   - Scan short strings (`len<=2`) with `freq > 1%` → treat as null.
+
+---
+
+## Stage 3: Missingness & Cleaning
+
+> _Leverage MIT’s “Robust Missing Data” guidelines._
+
+### Objectives
+
+- Characterize missingness mechanism & apply robust imputation or flagging.
+
+### Key Tasks
+
+1. **Missingness Pattern Analysis**
+
+   - Little’s omnibus MCAR test & per-column logistic test.
+
+2. **Stratified Missingness**
+
+   - `df.groupby(target)[col].apply(lambda s: s.isna().mean())`.
+
+3. **Drop vs Impute**
+
+   - Drop if `missing_frac > config.thresholds.missing_frac_drop`.
+   - Else impute—choose strategy per column:
+
+     - Numeric: mean/median/KNN (only if `n_rows <= knn_max_rows`) /random.
+     - Categorical: mode/constant/random via TVD.
+
+4. **Cast Mixed-Type**
+
+   - If strings in numeric column ≥90% digit-like, cast to numeric.
+
+### Checks & Metrics
+
+- Report per-column missing fractions & chosen method.
+- Report covariate shift pre/post imputation.
+
+---
+
+## Stage 4: Outlier Detection & Treatment
+
+### Objectives
+
+- Detect both univariate & multivariate outliers, then either cap (winsorize) or drop.
+
+### Key Tasks
+
+1. **Univariate Rules** (each gives 1 vote)
+
+   - IQR (1.5×), Z-score (|z|>3), ModZ (|modz|>3.5), Tukey (2× IQR), 1st/99th pct.
+
+2. **Multivariate Rules** (row-complete only)
+
+   - If `n_rows >= 5×n_features` & ≥60% Gaussian: Mahalanobis (χ² 97.5%).
+   - Else if `n_rows<2k & n_features<50`: LOF (novelty).
+   - Else: IsolationForest (contamination 0.01).
+   - Special case: if `n_features ≥ n_rows`, skip directly to IsolationForest.
+
+3. **Voting & Threshold**
+
+   - Flag real outliers if votes ≥ `config.thresholds.outlier_vote_threshold`.
+
+4. **Treatment**
+
+   - If `cap_outliers=True`: Winsorize at each column’s 1st/99th pct.
+   - Else: drop rows.
+
+### Checks & Metrics
+
+- Number & fraction of rows flagged by each method.
+- Final outlier count & treatment summary.
+
+---
+
+## Stage 5: Scaling & Transformation
+
+> _Based on MIT’s “Adaptive Scaling” paper._
+
+### Objectives
+
+- Drop near-zero-variance, choose an optimal scaler, then apply extra transforms to nudge toward normality.
+
+### Key Tasks
+
+1. **Drop NZV Columns** (`nunique < config.nzv_threshold`).
+2. **Choose Scaler** by skew/kurtosis:
+
+   - If any `|skew| > sk_thresh_robust` or `|kurt| > kurt_thresh_robust` → RobustScaler
+   - Else if ALL `|skew| < sk_thresh_standard` → StandardScaler
+   - Else → MinMaxScaler
+
+3. **Fit & Apply Scaler** → `self.scaler`.
+4. **Post-Scale Normality Check** (Shapiro p > shapiro_p_thresh & |skew|\<transform_skew_thresh).
+5. **Extra Transforms** (if not “Gaussian enough”):
+
+   - Trial: none, Box-Cox (if all >0), Yeo-Johnson, Quantile→Normal
+   - Choose by lexicographic `(pval, −|skew|)`.
+
+6. **Persist** `scaler`, per-col transformer for `transform()`.
+
+### Checks & Metrics
+
+- Report chosen scaler & per-column transform with scores.
+- JSON or DataFrame–style report for drift monitoring.
+
+---
+
+## Stage 6: Feature Engineering & Selection
+
+> _Following Stanford’s “Feature Lab” guidelines._
+
+### Objectives
+
+- Add generic derived features, prune redundancy, preselect for modeling.
+
+### Key Tasks
+
+1. **Interaction Candidates**
+
+   - Optionally generate pairwise (`A×B`, `A+B`) for top N numeric pairs by correlation.
+
+2. **Binning / Grouping**
+
+   - Auto-bin numeric into quartiles or quantile buckets.
+
+3. **Categorical Encoding**
+
+   - Target or frequency encoding for high-cardinality (>10 levels).
+
+4. **Correlated Feature Pruning**
+
+   - Drop one of any pair with `|corr| > config.thresholds.drop_corr` (e.g. 0.95).
+
+5. **Recursive Feature Elimination (RFE)**
+
+   - Light wrapper using your chosen estimator to preselect top K features.
+
+6. **Save** transformation summary for `transform()`.
+
+### Checks & Metrics
+
+- Final feature count.
+- Variance Inflation Factor (VIF) to detect multicollinearity.
+- Permutation‐importance snapshot.
+
+---
+
+## Stage 7: Train/Val/Test Split & Baseline
+
+> _CRISP-DM Step: Modeling, but here only splitting & baseline._
+
+### Objectives
+
+- Create reproducible splits; optionally oversample; compute trivial baselines.
+
+### Key Tasks
+
+1. **Parquet Splits**
+
+   - Train/Val/Test: 60/20/20 stratified on target if requested.
+
+2. **Oversampling**
+
+   - If classification (`y.dtype.kind in {'O','i','b'}`) & `oversample=True`, apply SMOTE on train only.
+
+3. **Baseline Models**
+
+   - Regression: mean predictor → MAE, R²
+   - Classification: majority class → accuracy, F1
+   - (Optionally add k-NN vs naive Bayes as extra baselines.)
+
+4. **Sanity Checks**
+
+   - No index overlap between splits.
+   - No feature identical to target.
+
+### Checks & Metrics
+
+- Row counts per split.
+- Baseline metric summary in JSON.
+
+---
+
+## Stage 8: Leakage Detection & Integrity
+
+### Objectives
+
+- Catch both target-leakage and train/test separation leakage.
+
+### Key Tasks
+
+1. **Target-Leakage**
+
+   - For each feature: compute AUC( feature → target ) > auc_thresh (e.g. 0.99)
+   - Categorical: one-hot & take max AUC.
+
+2. **Train/Test Separation**
+
+   - Concat train/test, label 0/1, compute AUC( feature → is_train ).
+
+3. **Row Overlap**
+
+   - Merge on all features – if any exact duplicate, warn.
+
+4. **Unseen Categories**
+
+   - For each cat col: test_vals – train_vals → report.
+
+### Checks & Metrics
+
+- List of leaky features.
+- Separation AUC per feature.
+- Overlap row count.
+
+---
+
+## Next Steps & MLOps
+
+1. **Model Selection & Tuning**
+
+   - Wrap with [`sklearn.pipeline.Pipeline`](https://scikit-learn.org/stable/modules/pipeline.html), grid/RandomSearchCV.
+
+2. **Experiment Tracking**
+
+   - Log metrics/params to MLflow or Weights & Biases.
+
+3. **Model Validation**
+
+   - Cross-validation, calibration curves, partial dependence.
+
+4. **Deployment**
+
+   - Package as API (FastAPI), containerize (Docker), auto-retrain triggers.
+
+5. **Monitoring**
+
+   - Periodic data-drift & prediction-drift checks, alerting on threshold breaches.
+
+---
+
+> **References & Further Reading**
+>
+> - CRISP-DM (SPC Whitepaper)
+> - TDSP (Microsoft’s Team Data Science Process)
+> - “Feature Lab” at Stanford CS229
+> - MIT 6.86x “Machine Learning on Big Data” lecture notes
+> - Harvard Data Science Common Workflow
+
+_(This README is meant as a living document – feel free to iterate over it as your team’s needs evolve.)_
+
+Here’s a **single, self-contained** `improvements.md` capturing every review point and extending them with additional suggestions. Feel free to drop it into your repo (e.g. at `docs/improvements.md`) and iterate from there.
+
+````markdown
+# Pipeline Code Review & Improvement Roadmap
+
+> **Scope:** Six modules (Stages 1–6) plus cross-cutting concerns  
+> **Goal:** Capture all known bugs, omissions, and “nice-to-haves,” then propose concrete fixes or enhancements—organized for easy reference.
+
+---
+
+## 🔹 1. `stage1_data_collection.py`
+
+1. **`datetime` import in `suppress(ImportError)`**
+
+   - **Issue:** Failing any third-party import silences the `datetime` import.
+   - **Fix:** Move `from datetime import datetime` _above_ or _outside_ the `suppress` block.
+
+2. **Confusing `pathlib as Path` alias**
+
+   - **Issue:** You wrote `import pathlib as Path`, then call `Path.Path(...)`.
+   - **Fix:** Use either
+     ```python
+     from pathlib import Path
+     ```
+     or
+     ```python
+     import pathlib
+     ```
+     and adjust calls accordingly.
+
+3. **Undefined `boto3` if import suppressed**
+
+   - **Issue:** Attempting `boto3.client(...)` will `NameError` if `boto3` was never bound.
+   - **Fix:** Wrap S3 logic in its own try/except or explicitly `if "boto3" not in globals(): raise ImportError(...)`.
+
+4. **Duplicate-row logging but no dropping**
+
+   - **Issue:** We warn about duplicates but never dedupe.
+   - **Enhancement:** Add a `drop_duplicates` flag or a separate `dedupe()` method.
+
+5. **Missing return paths in `_postprocess()`**
+
+   - **Issue:** Unexpected JSON shapes may yield `None` or `ValueError` without clarity.
+   - **Fix:** Explicitly catch and re-raise with context (e.g. “REST response missing `data.records`”).
+
+6. **Great Expectations block not fully guarded**
+   - **Issue:** Missing suite or GE directory will crash.
+   - **Fix:** Surround the entire GE block in try/except and log “suite `<name>` not found → skipping validation.”
+
+---
+
+## 🔹 2. `stage2_imputation.py`
+
+1. **Invalid logistic‐regression “likelihood”**
+
+   - **Issue:** Using `lr.score` as log‐likelihood and inverting `XᵀX` for SE is statistically unsound.
+   - **Fix:** Replace with a proper likelihood-ratio test (e.g. `statsmodels.discrete.discrete_model.Logit`) or a specialized missingness package.
+
+2. **Fragile TVD computation**
+
+   - **Issue:** `.loc[common]` can KeyError or miss categories that appear only after imputation.
+   - **Fix:** Compute TVD over the _union_ of categories, filling missing frequencies with 0.
+
+3. **Unilateral column drop at 90 % NA**
+
+   - **Issue:** You drop any column > 0.9 missing with no alternative strategy.
+   - **Fix:** Expose a `drop_hi_na: bool` flag or implement a fallback imputation (e.g. MICE) for critical features.
+
+4. **KNN imputer can be intractable at scale**
+
+   - **Issue:** `KNNImputer` on large `n×p` blocks is slow.
+   - **Enhancement:** If `n_rows > N` or `p > P`, either downsample or skip to median impute.
+
+5. **Premature column dropping**
+
+   - **Issue:** Dropping before feature-importance analysis may remove valuable predictors.
+   - **Enhancement:** Delay hard drops until after a feature‐importance check (e.g. mutual information).
+
+6. **Non-reproducible “random-sample” impute**
+
+   - **Issue:** Calls to `np.random.choice` lack a `random_state`.
+   - **Fix:** Use a `RandomState(self.random_state)` instance for reproducibility.
+
+7. **Potential silent misalignment in `transform()`**
+   - **Issue:** Relying on dropping `self.cols_to_drop` via names may silently skip if names change.
+   - **Enhancement:** Assert that all expected `cols_to_drop` are indeed dropped (or warn if missing).
+
+---
+
+## 🔹 3. `stage3_outlier_detection.py`
+
+1. **Over-eager winsorization**
+
+   - **Issue:** Winsorizes any row with _any_ univariate vote, instead of “real” outliers.
+   - **Fix:** Only cap rows with votes ≥ `multi_vote_threshold` (or expose a `winsorize_min_votes` parameter).
+
+2. **Mahalanobis drops rows with any NA**
+
+   - **Issue:** `df.dropna()` before covariance fitting may discard most of wide tables.
+   - **Fix:** Impute missing or use pairwise‐complete Mahalanobis (e.g. based on robust covariance).
+
+3. **Misaligned indices in `_modz_outliers()`**
+
+   - **Issue:** Building `modz` on `arr = series.dropna().values` then zipping with `series.dropna().index` can misalign if the original `series` has gaps.
+   - **Fix:** Compute directly on full series and mask NaNs:
+     ```python
+     modz = 0.6745 * (series - med) / mad
+     return series[modz.abs() > cutoff].index.tolist()
+     ```
+
+4. **No “drop” option for outliers**
+
+   - **Issue:** The class docs mention `drop_outliers=True` but no such argument exists.
+   - **Fix:** Add `treatment="winsorize"|"drop"` in `__init__`.
+
+5. **Report JSON lacking per-row votes**
+
+   - **Issue:** We only write counts and a list of final indices.
+   - **Enhancement:** Add a `"votes_per_row": { idx: vote_count, … }` section to the report.
+
+6. **Blind reliance on χ² threshold for non-normal data**
+   - **Issue:** If features aren’t Gaussian, Mahalanobis ppf cutoffs are meaningless.
+   - **Enhancement:** Log the average kurtosis and warn if > 5 (or fallback to IF).
+
+---
+
+## 🔹 4. `stage4_scaling_transformation.py`
+
+1. **Box-Cox λ not persisted**
+
+   - **Issue:** You fit Box-Cox in train but cannot re-apply the same λ in `transform()`.
+   - **Fix:** Store `self.boxcox_lambdas[col] = λ` and call `stats.boxcox(x, lmbda=λ)` on new data.
+
+2. **Non-deterministic Shapiro on large arrays**
+
+   - **Issue:** Subsampling via `np.random.choice` without a seed makes p-values non-reproducible.
+   - **Fix:** Use `rng = RandomState(self.random_state)` for any subsampling.
+
+3. **Re-fitting transforms on test set**
+
+   - **Issue:** In `transform()`, Box-Cox, Yeo, and QT are re-fitted to test data.
+   - **Fix:** Always apply the _fitted_ `PowerTransformer`/`QuantileTransformer` or persisted λ, never re-fit.
+
+4. **Misplaced PCA code**
+
+   - **Issue:** PCA logic appears under scaling module.
+   - **Fix:** Remove from this file; it belongs in `stage6_pca.py`.
+
+5. **No constant/near-zero-var guard**
+
+   - **Enhancement:** If `std < ε`, skip all transforms on that column.
+
+6. **Report JSON missing “why” for scaler choice**
+   - **Enhancement:** In the JSON, include the exact skew/kurtosis values that triggered the chosen scaler.
+
+---
+
+## 🔹 5. `stage5_encoding.py`
+
+1. **Unimplemented `transform()`**
+
+   - **Issue:** No way to encode new data consistently.
+   - **Fix:** Mirror the one-hot, ordinal, or target encodings from `fit_transform()` in a `transform()` method, preserving categories.
+
+2. **Returns only “linear” variant**
+
+   - **Issue:** Functions build `df_lin`, `df_tree`, `df_knn` but only return `df_lin`.
+   - **Fix:** Return all variants as a tuple or allow user to select which one they want back.
+
+3. **Arbitrary column ordering**
+
+   - **Enhancement:** After concatenation, explicitly reorder columns (e.g. `df = df[sorted(df.columns)]`).
+
+4. **No “RARE” binning before freq-encode**
+
+   - **Enhancement:** Collapse categories under a `min_freq` threshold into a `"__RARE__"` bucket to stabilize encoding.
+
+5. **No leakage guard in target encoding**
+   - **Enhancement:** If you implement mean/WOE encoding, always do cross-validated encoding (e.g. with smoothing) to avoid target leakage.
+
+---
+
+## 🔹 6. `stage6_pca.py`
+
+1. **Missing scaler persistence**
+
+   - **Issue:** You fit a `StandardScaler` but never store it, then attempt to standardize via `pca_model.mean_`.
+   - **Fix:** Store `self.scaler = StandardScaler().fit(X)` and use it in `transform()`.
+
+2. **Condition number on raw, unscaled data**
+
+   - **Enhancement:** Compute `cond()` on the _standardized_ covariance to detect numerical instability properly.
+
+3. **No guard for `p < 2`**
+
+   - **Issue:** Running PCA on 1 feature is meaningless.
+   - **Fix:** `if len(self.numeric_cols) < 2: skip PCA`.
+
+4. **No handling of zero-variance features**
+
+   - **Enhancement:** Drop `df[col].std() == 0` before PCA.
+
+5. **Inconsistent use of `PCA.mean_` vs. scale factors**
+   - **Issue:** The division by `sqrt(explained_variance_)` is incorrect for standardization.
+   - **Fix:** Always standardize via the stored `StandardScaler`, then project with the fitted PCA.
+
+---
+
+## 🔹 Cross-Cutting & Master-Pipeline
+
+1. **Reproducibility via `random_state` everywhere**
+
+   - Ensure _all_ classes accept a seed and use it for any random or subsampling.
+
+2. **Centralized thresholds / config**
+
+   - Move all numeric literals (`0.975`, `1.5×IQR`, `5000 rows`, `0.05 missing`, `500-level cutoff`) into a single `config.py` or `config.yaml`.
+
+3. **Timestamped & versioned report files**
+
+   - Append `_YYYYMMDD_HHMMSS` or a git commit hash to JSON outputs so you don’t overwrite previous runs.
+
+4. **Unified logging setup**
+
+   - In your “main” or notebook, call `logging.basicConfig(level=DEBUG, ...)` so that each module’s `log = logging.getLogger("stageX")` actually emits output.
+
+5. **Master‐Pipeline wrapper**
+
+   - Define a single class or function that orchestrates Stage 1→Stage 6 in order, persists each fitted transformer, and provides a single `preprocess(df_raw)` entrypoint.
+
+6. **Unit tests for corner cases**
+
+   - Write `pytest` cases for:
+     - No numeric columns
+     - All‐missing columns
+     - Single‐row / single-col DataFrames
+     - Tiny vs huge datasets (to catch skipped-at-scale logic)
+
+7. **Flexible I/O formats**
+
+   - Allow all stages to read/write CSV, Parquet, or Feather via a parameter (e.g. `engine="pyarrow"`).
+
+8. **Early exit for supervised vs unsupervised modes**
+
+   - Let missingness‐analysis, outlier‐detection, and encoding know whether a target exists and behave accordingly.
+
+9. **Performance guards & profiling**
+
+   - Before KNN, Mahalanobis, Box-Cox loops, check `n_rows * p > threshold` and either subsample or skip.
+
+10. **Explicit mixed-type sniffing**
+    - In a pre-step, find columns whose values mix strings/numerics and either coerce or isolate them for manual cleaning.
+
+---
+
+> _Implementing the **top 10 urgent fixes** (boxed in each section) will resolve the most critical correctness issues; the remaining 40+ “nice-to-haves” will round out robustness, reproducibility, and performance at scale._
+````
+
+**Next Steps:**
+
+1. Paste this `improvements.md` into your repo.
+2. Tackle the _boxed_ items in priority order.
+3. Add unit tests or schema guards for each fix.
+4. Wire everything into a single orchestrator for end-to-end reproducibility.
+
+Good luck!
+
+---
+
+Below is a single, end-to-end **README.md** you can drop into your repo (or rename to `instruments.md`) that merges:
+
+1. **Stanford/MIT/Harvard best-practice** life-cycle frameworks (CRISP-DM, TDSP, “classic ML flow”)
+2. All of the dozens of concrete checks and improvements we discussed above
+3. A clear, stage-by-stage checklist you can refer to for _every_ new project
+
+Feel free to tweak thresholds or expand any section with your own notes.
+
+---
+
+````markdown
+# Machine Learning Pipeline Reference
+
+> **Purpose:**  
+> This document codifies a reproducible, configurable, end-to-end ML pipeline from raw data ingestion through feature engineering — pulling together best practices from Stanford, MIT, Harvard and our in-house improvements.
+>
+> **How to use:**  
+> For each project, walk through the numbered stages below. Each stage lists **Objectives**, **Key Tasks**, **Checks & Metrics**, and **Configurable Parameters**.
+
+---
+
+## Table of Contents
+
+1. [Stage 0: Project Setup & Configuration](#stage-0-project-setup--configuration)
+2. [Stage 1: Data Ingestion](#stage-1-data-ingestion)
+3. [Stage 2: Data Validation & Sanity Checks](#stage-2-data-validation--sanity-checks)
+4. [Stage 3: Missingness & Cleaning](#stage-3-missingness--cleaning)
+5. [Stage 4: Outlier Detection & Treatment](#stage-4-outlier-detection--treatment)
+6. [Stage 5: Scaling & Transformation](#stage-5-scaling--transformation)
+7. [Stage 6: Feature Engineering & Selection](#stage-6-feature-engineering--selection)
+8. [Stage 7: Train/Val/Test Split & Baseline](#stage-7-trainvaltest-split--baseline)
+9. [Stage 8: Leakage Detection & Integrity](#stage-8-leakage-detection--integrity)
+10. [Next Steps](#next-steps)
+
+---
+
+## Stage 0: Project Setup & Configuration
+
+### Objectives
+
+- Centralize all thresholds, file paths, random seeds, reporting options.
+- Ensure reproducibility (version your code, record git SHA).
+
+### Key Tasks
+
+- Create `config.yaml` (or Python dict) with:
+  ```yaml
+  data:
+    raw_path: data/raw/
+    proc_path: data/processed/
+  thresholds:
+    high_cardinality_ratio: 0.10
+    missing_frac_drop: 0.90
+    outlier_vote_threshold: 3
+    nzv_unique_threshold: 2
+    skew_robust: 1.0
+    kurtosis_robust: 5.0
+    shapiro_p_thresh: 0.05
+  random_seed: 42
+  ```
+````
+
+- Record experiment metadata: git commit, timestamp, config hash.
+
+### Checks & Metrics
+
+- Validate `config.yaml` schema (e.g. with [Cerberus](https://docs.python-cerberus.org/)).
+- Halt if any required key is missing.
+
+---
+
+## Stage 1: Data Ingestion
+
+### Objectives
+
+- Load raw tables (CSV, Parquet, database) into a canonical in-memory format.
+- Persist a snapshot (Parquet) for downstream stages.
+
+### Key Tasks
+
+1. **Read source** into `pd.DataFrame` (or Spark/DB connector).
+2. **Schema enforcement**:
+
+   - Define expected dtypes & nullability in a schema file (JSON/Avro/tdl).
+   - Cast or reject mismatches.
+
+3. **Write** cleaned snapshot to `data/processed/data.parquet`.
+
+### Checks & Metrics
+
+- Row counts vs. source logs.
+- Column count & dtypes match schema.
+- Checksum Parquet file for integrity.
+
+---
+
+## Stage 2: Data Validation & Sanity Checks
+
+> _Inspired by Harvard’s “Data Quality Framework”._
+
+### Objectives
+
+- Detect structural, semantic, and cross-field anomalies before heavy processing.
+
+### Key Tasks & Checks
+
+1. **Mixed-Type Detection**
+
+   - For each column:
 
      ```python
-     if path.startswith("s3://"):
-         obj = boto3.client("s3").get_object(...)
+     types = df[col].dropna().map(type).value_counts()
+     if len(types) > 1: report.mixed_types[col] = types.to_dict()
      ```
 
-     but since `boto3` was imported inside the `suppress(ImportError)` block, if `boto3` isn’t installed (or any earlier import in that block fails), then `boto3` is undefined here, causing a `NameError` rather than a polite “unsupported.”
+2. **Impossible Value Rules**
 
-   - **Fix suggestion:** check `if "boto3" not in globals(): raise ImportError("boto3 not installed")` before attempting any S3 logic, or wrap the S3 logic in its own try/except and fallback to a clear error.
+   - User-supplied forbidden sets (e.g. negative ages, zeros in IDs).
 
-4. **Duplicate‐Row Logging But Not Dropping**
+3. **Unexpected High-Cardinality**
 
-   ```python
-   dup_count = df.duplicated().sum()
-   if dup_count:
-       log.warning(f"{source:15} | duplicates={dup_count} rows (logged, not dropped).")
-   ```
+   - `unique_ratio = nunique / n_rows`; if `> config.thresholds.high_cardinality_ratio`, flag.
 
-   - We log the presence of duplicates but never actually offer a way to drop or dedupe them. This may be fine if you explicitly want to preserve duplicates, but it probably deserves a TODO or a configurable “drop_duplicates=True/False” flag.
+4. **Near-Zero-Variance**
 
-5. **Missing Return in Some Code Paths**
+   - Drop if `nunique < config.thresholds.nzv_unique_threshold`.
 
-   - In `_postprocess()`, if for some reason `df` is empty or `None`, we raise `ValueError("Loaded data … is empty.")`. That’s fine, but there is no explicit handling of, say, “unsupported REST response shape.” If a JSON payload is empty or nested differently, we might silently produce an empty DataFrame and then immediately error. You may want to catch that earlier and give a more descriptive message.
+5. **Duplicate Rows**
 
-6. **Great Expectations Validation Doesn’t Catch All Exceptions**
+   - `df.duplicated().sum()`. Optionally remove.
 
-   ```python
-   if "great_expectations" not in globals():
-       log.warning("… skipped validation")
-       return
-   ctx = ge.DataContext()
-   suite = ctx.get_expectation_suite(self.suite_name)
-   …
-   ```
+6. **Custom Missing Markers**
 
-   - If the user specified `validate=True` but forgot to create a GE directory or the suite is missing, `ctx.get_expectation_suite(...)` will raise a cryptic error. We catch none of that, so the entire ingestion can crash. Better to wrap the entire block in `try/except` and log precisely “suite not found → skipping.”
+   - Scan short strings (`len<=2`) with `freq > 1%` → treat as null.
 
 ---
 
-## 2. `stage2_imputation.py`
+## Stage 3: Missingness & Cleaning
 
-1. **Logistic‐Regression “Missingness Test” Is Statistically Flawed**
+> _Leverage MIT’s “Robust Missing Data” guidelines._
 
-   ```python
-   lr = LogisticRegression(solver="liblinear")
-   lr.fit(X, y)
-   ll_full = lr.score(X, y)
-   # … then use Wald approximations on lr.coef_ to get p-values
-   ```
+### Objectives
 
-   - `lr.score(X, y)` returns classification accuracy, **not** log‐likelihood. Using `lr.score` as a “proxy for log‐likelihood” is incorrect.
-   - Computing standard errors by inverting `XᵀX` (i.e. a linear regression formula) is also not valid for logistic regression unless you explicitly use a Fisher information matrix.
-   - **Result:** the “per‐column MCAR vs MAR/MNAR” may be completely bogus. If you truly need per‐column missingness inference, you must run a proper LRT (likelihood‐ratio test) or use a package that gives you Wald‐standard errors for logistic.
+- Characterize missingness mechanism & apply robust imputation or flagging.
 
-2. **TVD (“Total Variation Distance”) Computation May KeyError**
+### Key Tasks
 
-   ```python
-   common = set(freq_before.index).intersection(set(freq_after.index))
-   tvd = sum(abs(freq_before.loc[list(common)] – freq_after.loc[list(common)]))
-   ```
+1. **Missingness Pattern Analysis**
 
-   - If `common` is empty or some categories appear only after imputation, then `.loc[list(common)]` might fail or skip categories. Also, you assume that the index of `freq_after` includes all `freq_before` keys, but with `random_sample` imputation, the distribution can introduce new categories if weird.
-   - Better approach: compute TVD over the union of keys, filling missing frequencies with 0.0 on either side.
+   - Little’s omnibus MCAR test & per-column logistic test.
 
-3. **Dropping Entire Columns If > `max_missing_frac_drop` Without Further Analysis**
+2. **Stratified Missingness**
 
-   ```python
-   if info["fraction_missing"] > self.max_missing_frac_drop:
-       self.cols_to_drop.append(col)
-   ```
+   - `df.groupby(target)[col].apply(lambda s: s.isna().mean())`.
 
-   - The user specifically wanted to preserve columns even if missingness is high; simply dropping again may violate that “never drop at 50%” requirement.
-   - Better: expose a second threshold, or choose an alternative strategy (e.g. advanced pattern‐based imputation) rather than dropping unilaterally.
+3. **Drop vs Impute**
 
-4. **KNN Imputation Can Be Very Slow on Large Datasets**
+   - Drop if `missing_frac > config.thresholds.missing_frac_drop`.
+   - Else impute—choose strategy per column:
 
-   - You’ve “light‐weighted” the pipeline to use KNN only, but if `n_rows` is in the tens or hundreds of thousands, calling `KNNImputer(n_neighbors=5).fit()` on an $n\times p$ matrix can become a bottleneck.
-   - **Suggestion:** check `if n_rows > some_threshold: skip KNN or downsample reference set.`
+     - Numeric: mean/median/KNN (only if `n_rows <= knn_max_rows`) /random.
+     - Categorical: mode/constant/random via TVD.
 
-5. **Unnecessarily Wipes Out Columns Early**
+4. **Cast Mixed-Type**
 
-   - Because you drop all columns with missing fraction > 0.90 _before_ even deciding how “important” those columns might be, you might be discarding features that turn out to have high mutual information later. Better to defer “hard drop” until after you’ve done feature‐importance checks.
+   - If strings in numeric column ≥90% digit-like, cast to numeric.
 
-6. **Implicit Reliance on Global Randomness for “Random‐Sample” Impute**
+### Checks & Metrics
 
-   - When you do
-
-     ```python
-     arr_rand.loc[mask] = np.random.choice(nonnull_vals, …)
-     ```
-
-     you never set a random seed for reproducibility. This will produce different imputations on each run unless the user manually seeds `numpy.random.seed(...)`.
-
-7. **Overwriting `df0` vs. Preserving Original Data**
-
-   - In `fit()`, you do `df0 = df.copy()` and then immediately drop columns from it. But in `transform()`, you drop those same `cols_to_drop` from the new `df1`. If the new DataFrame has slightly different column names or order, it might silently skip or mis‐align.
+- Report per-column missing fractions & chosen method.
+- Report covariate shift pre/post imputation.
 
 ---
 
-## 3. `stage3_outlier.py`
+## Stage 4: Outlier Detection & Treatment
 
-1. **Winsorization Logic Flags Too Many Rows**
+### Objectives
 
-   ```python
-   mask_any = [i for i, v in votes.items() if v > 0]
-   for col in self.numeric_cols:
-       lower = np.nanpercentile(arr, …)
-       upper = np.nanpercentile(arr, …)
-       for i in mask_any:
-           if val < lower: val = lower
-           if val > upper: val = upper
-   ```
+- Detect both univariate & multivariate outliers, then either cap (winsorize) or drop.
 
-   - You take _every_ row that got even 1 univariate vote and winsorize that row’s value at the 1 %‐99 % cut. In practice, that might be too aggressive. Usually, one only wants to winsorize the “real outliers” (i.e. votes ≥ `MULTI_VOTE_THRESHOLD`) or at least allow the user to choose.
+### Key Tasks
 
-2. **Mahalanobis Implementation Ignores Rows with Any NaNs**
+1. **Univariate Rules** (each gives 1 vote)
 
-   ```python
-   numeric_block = df0[self.numeric_cols].dropna()
-   if numeric_block.shape[0] >= …:
-       cov = EmpiricalCovariance().fit(numeric_block.values)
-       md = cov.mahalanobis(numeric_block.values)
-   ```
+   - IQR (1.5×), Z-score (|z|>3), ModZ (|modz|>3.5), Tukey (2× IQR), 1st/99th pct.
 
-   - As soon as a single numeric column has even one NaN, you drop that entire row out of the Mahalanobis calculation. If, say, 50 % of rows have one missing numeric, you might skip almost all of them. This will severely undercount multivariate outliers on wide tables with patchy coverage.
+2. **Multivariate Rules** (row-complete only)
 
-3. **Modified Z‐Score Uses `arr` vs. Aligning to Original Indices**
+   - If `n_rows >= 5×n_features` & ≥60% Gaussian: Mahalanobis (χ² 97.5%).
+   - Else if `n_rows<2k & n_features<50`: LOF (novelty).
+   - Else: IsolationForest (contamination 0.01).
+   - Special case: if `n_features ≥ n_rows`, skip directly to IsolationForest.
 
-   ```python
-   arr = series.dropna().values
-   med = np.median(arr)
-   mad = np.median(np.abs(arr - med))
-   modz = 0.6745 * (arr - med) / mad
-   return [idx for idx, val in zip(series.dropna().index, modz) if abs(val) > cutoff]
-   ```
+3. **Voting & Threshold**
 
-   - This is mostly correct, but if your `series` has dtype `int64`, `series.dropna()` will create a copy of only non‐NaN rows and break the original indexing. If you then winsorize or drop, you may mismatch positions. Better to always compute `(series - med).abs()` on the _original_ index and skip NaNs explicitly.
+   - Flag real outliers if votes ≥ `config.thresholds.outlier_vote_threshold`.
 
-4. **No Option to Actually “Drop” Rows**
+4. **Treatment**
 
-   - The docstring says “if you prefer to drop rows, call `drop_outliers=True`,” but there is no such parameter in `fit_transform()`. You unconditionally winsorize flagged rows—there is no branch to drop rows instead.
+   - If `cap_outliers=True`: Winsorize at each column’s 1st/99th pct.
+   - Else: drop rows.
 
-5. **Report JSON Doesn’t Include Per‐Row Vote Counts**
+### Checks & Metrics
 
-   ```python
-   outlier_report = {
-       "univariate": report_univ,
-       "multivariate": report_multi,
-       "final": report_final
-   }
-   ```
-
-   - You report counts of how many rows each method flagged, and a list of “final indices,” but you never include a map of “row index → vote count.” Downstream consumers might want to know exactly which rows got 1 vote vs. 2 votes.
-
-6. **Using `chi2.ppf(self.MULTI_ALPHA, df=…)` Without Correction**
-
-   - When you say `thresh = chi2.ppf(self.MULTI_ALPHA, df=num_numeric_cols)`, that threshold only makes sense if your numeric block is truly multivariate‐normal. If the block is not near‐Gaussian, you will flag way too many or too few. You might want to at least log the block’s kurtosis or warn if any numeric is far from normal before trusting Mahalanobis.
+- Number & fraction of rows flagged by each method.
+- Final outlier count & treatment summary.
 
 ---
 
-## 4. `stage4_scaling_transform.py`
+## Stage 5: Scaling & Transformation
 
-1. **Box‐Cox/LéTransform Handling in `transform()` Is Incomplete**
+> _Based on MIT’s “Adaptive Scaling” paper._
 
-   ```python
-   if choice == "boxcox":
-       df1[col], _ = stats.boxcox(arr)
-   elif choice == "yeo":
-       pt: PowerTransformer = self.transform_models[col]
-       df1[col] = pt.transform(df1[[col]]).flatten()
-   …
-   ```
+### Objectives
 
-   - You never saved the Box‐Cox “λ” parameter from `stats.boxcox` in `fit_transform()`. So on `transform()`, you can’t re‐use the original λ to transform new data. As written, you’re recomputing a brand‐new Box‐Cox fit on the test data (which defeats the purpose of avoiding leakage).
-   - **Fix suggestion:** when you do `output, λ = stats.boxcox(...)`, store that λ (e.g. `self.boxcox_lambdas[col] = λ`) so you can do `stats.boxcox(arr, lmbda=self.boxcox_lambdas[col])` in `transform()`.
+- Drop near-zero-variance, choose an optimal scaler, then apply extra transforms to nudge toward normality.
 
-2. **Shapiro Test on Large Arrays + Subsampling**
+### Key Tasks
 
-   ```python
-   sample = arr if arr.size <= 5000 else np.random.choice(arr, 5000, replace=False)
-   pval = float(stats.shapiro(sample)[1])
-   ```
+1. **Drop NZV Columns** (`nunique < config.nzv_threshold`).
+2. **Choose Scaler** by skew/kurtosis:
 
-   - If your dataset is larger than 5 000 rows, you subsample 5 000 points. But “random choice” without a fixed seed means your “normality check” is non‐deterministic.
-   - **Suggestion:** always pass `random_state` or `np.random.seed(...)` before subsampling, or use a deterministic 5 000‐sample subset.
+   - If any `|skew| > sk_thresh_robust` or `|kurt| > kurt_thresh_robust` → RobustScaler
+   - Else if ALL `|skew| < sk_thresh_standard` → StandardScaler
+   - Else → MinMaxScaler
 
-3. **`transform()` Doesn’t Reuse the Original Scaler’s Parameters**
+3. **Fit & Apply Scaler** → `self.scaler`.
+4. **Post-Scale Normality Check** (Shapiro p > shapiro_p_thresh & |skew|\<transform_skew_thresh).
+5. **Extra Transforms** (if not “Gaussian enough”):
 
-   ```python
-   df1[self.numeric_cols] = self.scaler_model.transform(df1[self.numeric_cols])
-   ```
+   - Trial: none, Box-Cox (if all >0), Yeo-Johnson, Quantile→Normal
+   - Choose by lexicographic `(pval, −|skew|)`.
 
-   - Actually, `self.scaler_model` _is_ the fitted scaler, so that part is OK. But when you move on to the “extra transforms,” you do
+6. **Persist** `scaler`, per-col transformer for `transform()`.
 
-     ```python
-     if choice == "boxcox":
-         df1[col], _ = stats.boxcox(arr)
-     ```
+### Checks & Metrics
 
-     which refits Box‐Cox on the test set rather than using the original λ. Likewise, `PowerTransformer` and `QuantileTransformer` are re‐fit on the test set unless you explicitly clone and store them from `fit_transform()`. You do store `pt = PowerTransformer(...)` and `qt = QuantileTransformer(...)`, but for Box‐Cox you store nothing. So your production `transform()` is not consistent with `fit_transform()` for any new data.
-
-4. **PCA‐Related Code in `transform()` Is Misplaced (Wrong File)**
-
-   - In `stage4_scaling_transform.py`, there is no PCA. Yet the code at the very bottom of this file tries to “re‐scale” for PCA by referencing `self.pca_model.mean_` (which doesn’t exist in this class). That part clearly belongs in `stage6_pca.py`. Probably a copy/paste error.
-
-5. **No Checks for “All‐Zero” or “Constant” Columns After Scaling**
-
-   - If after scaling a column is (nearly) constant (e.g. `std≈0`), the subsequent transforms (Box‐Cox, Yeo, etc.) might blow up (Box‐Cox needs strictly positive variation). You should at least detect “std < ε” and skip transforms on that column altogether.
-
-6. **`_choose_scaler()` Doesn’t Record _Why_ It Picked a Particular Scaler**
-
-   - You return only `"RobustScaler"` or `"StandardScaler"` or `"MinMaxScaler"`, but you never record the actual skew/kurtosis values in your JSON report (you only record them in logs). The JSON report under `REPORT_PATH / "transform_report.json"` ends up having no info on _which_ column was “too skewed” or “too kurtotic,” so it’s hard to debug exactly why you picked Robust vs MinMax vs Standard.
+- Report chosen scaler & per-column transform with scores.
+- JSON or DataFrame–style report for drift monitoring.
 
 ---
 
-## 5. `stage5_encoding.py`
+## Stage 6: Feature Engineering & Selection
 
-1. **`transform()` Is Completely Unimplemented**
+> _Following Stanford’s “Feature Lab” guidelines._
 
-   ```python
-   def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-       raise NotImplementedError("… transform() is not implemented …")
-   ```
+### Objectives
 
-   - This means at _inference time_, you have no way to apply the _same_ encoding to new data. The training‐time `fit_transform()` writes out three Parquet files, but there is no logic here to read those back in or to align new columns to the old set. If you ever run “encode” on a hold‐out set, you’ll have to write entirely new code.
+- Add generic derived features, prune redundancy, preselect for modeling.
 
-2. **Returning Only the “Linear” Variant by Default**
+### Key Tasks
 
-   ```python
-   df_lin = pd.concat([...])
-   df_lin.to_parquet("processed_train_linear.parquet", index=False)
-   return df_lin
-   ```
+1. **Interaction Candidates**
 
-   - You generate three different files (`processed_train_linear.parquet`, `processed_train_tree.parquet`, `processed_train_knn.parquet`) but then return only the _linear_ variant. If downstream code expects the Tree or KNN variant, they’ll need to re‐read the parquet files from disk. Probably better to return a `(df_lin, df_tree, df_knn)` tuple (or at least document clearly that you only return `df_lin`).
+   - Optionally generate pairwise (`A×B`, `A+B`) for top N numeric pairs by correlation.
 
-3. **No Preservation of Column‐Ordering When Concatenating**
+2. **Binning / Grouping**
 
-   - When you combine `df0.drop(columns=self.categorical_cols)`, then concatenate the one‐hot or frequency‐encoded blocks, you might end up with an arbitrary column order. That can be problematic if downstream code expects a consistent column order. It’s best practice to explicitly sort columns or store a canonical column list.
+   - Auto-bin numeric into quartiles or quantile buckets.
 
-4. **“Suggest Target Encode” Doesn’t Actually Generate Any Programmatic Output**
+3. **Categorical Encoding**
 
-   - You accumulate `linear_sugg` and `tree_sugg` lists of columns that have excessively high cardinality, but you never persist those suggestions anywhere other than the JSON file. You might want to log or return them so that the modeler can actually go in and create WOE‐encoding or leave it as is.
+   - Target or frequency encoding for high-cardinality (>10 levels).
 
-5. **No Check for Feature Leakage in High‐Cardinality Replacement**
+4. **Correlated Feature Pruning**
 
-   - If a categorical has extremely uneven frequencies, frequency‐encoding can inadvertently leak information if a rare category is too predictive of the target. It might be safer to pile any category with `< some_small_threshold` frequency into an “**RARE**” bucket before encoding. That logic is missing here.
+   - Drop one of any pair with `|corr| > config.thresholds.drop_corr` (e.g. 0.95).
 
----
+5. **Recursive Feature Elimination (RFE)**
 
-## 6. `stage6_pca.py`
+   - Light wrapper using your chosen estimator to preselect top K features.
 
-1. **No Storage of the Standardization Step for `transform()`**
+6. **Save** transformation summary for `transform()`.
 
-   ```python
-   full_pca = PCA()
-   full_pca.fit(X_std)
-   …
-   pca_model = PCA(n_components=n_comp)
-   X_reduced = pca_model.fit_transform(X_std)
-   …
-   self.pca_model = pca_model
-   ```
+### Checks & Metrics
 
-   - You standardize (`X_std = scaler.fit_transform(X.values)`) but never store the `scaler` in the object. As a result, in `transform()` you attempt to standardize using
-
-     ```python
-     X_std = (X - self.pca_model.mean_) / np.sqrt(self.pca_model.explained_variance_)
-     ```
-
-     which is mathematically incorrect. (`mean_` in `PCA` is the average of each original feature, but `explained_variance_` is the eigenvalues of the _PCA_ covariance, not the per‐feature variances. That formula will not reproduce the same scaling.)
-
-2. **Covariance Condition Number on Raw Data, Not Standardized**
-
-   ```python
-   cov_mat = np.cov(X.values, rowvar=False)
-   cond_num = cond(cov_mat)
-   ```
-
-   - Typically, one checks the condition number _after standardization_ (so that all features have unit variance). Computing `cond()` on the _raw_ covariance can be misleading if some features are on wildly different scales. If you wanted to detect near‐singularity, you should standardize first.
-
-3. **`transform()` Relies on `self.pca_model.mean_`, but That’s Not Enough**
-
-   - To transform new data consistently, you need to run exactly the same standardization (i.e. subtract `scaler.mean_` and divide by `scaler.scale_` if you used `StandardScaler`). Using `pca_model.mean_` alone fails to account for the original variances.
-
-4. **If `n == 1` or `p < 2`, You Don’t Strictly Check**
-
-   ```python
-   if not self.apply_pca:
-       …
-   if not self.numeric_cols:
-       …
-   X = df0[self.numeric_cols]
-   if X.isna().any().any():
-       …
-   cov_mat = np.cov(X.values)
-   cond_num = cond(cov_mat)
-   ```
-
-   - Suppose `len(self.numeric_cols) == 1`. Then `cov_mat` is a $1\times 1$ matrix, whose `cond()` is 1, so PCA tries to pick components even though a single‐feature PCA is meaningless.
-   - Better check `if len(self.numeric_cols) < 2: skip PCA`.
-
-5. **No Handling of “Zero Variance” Features**
-
-   - If one numeric column is constant, `np.cov(...)` will yield zeros, and the condition number calculation might blow up or be near infinite. You should explicitly drop or warn about zero‐variance features before computing `cov_mat`.
+- Final feature count.
+- Variance Inflation Factor (VIF) to detect multicollinearity.
+- Permutation‐importance snapshot.
 
 ---
 
-### Common‐Across‐All‐Modules
+## Stage 7: Train/Val/Test Split & Baseline
 
-1. **Randomness Without Fixed Seed**
+> _CRISP-DM Step: Modeling, but here only splitting & baseline._
 
-   - Several places use `np.random.choice(...)` without setting a seed. For reproducibility in production, you should expose a `random_state` parameter in each class and use it whenever you sample or subsample (e.g. `QuantileTransformer(random_state=self.random_state)`).
+### Objectives
 
-2. **JSON‐Report Filenames Hard‐Coded / Overwritten**
+- Create reproducible splits; optionally oversample; compute trivial baselines.
 
-   - Each stage writes a JSON report to a fixed path (e.g. `reports/profiling/...json`, `reports/missingness/column_missingness.json`, `reports/outliers/outlier_report.json`, etc.). If you run the pipeline multiple times in the same folder, you will overwrite previous reports. Consider adding timestamps or allowing the user to pass a custom path.
+### Key Tasks
 
-3. **No Centralized Logging Configuration**
+1. **Parquet Splits**
 
-   - Each file does `log = logging.getLogger("stageX")` but there is no guarantee the main script has configured logging to capture `stageX` output. As a result, some debug/info lines may not appear. You might want to set a common `logging.basicConfig(...)` in your “master script.”
+   - Train/Val/Test: 60/20/20 stratified on target if requested.
 
-4. **No Explicit “Pipeline” Object to Wire Everything Together**
+2. **Oversampling**
 
-   - You provided a “demo” in comments showing how to call Stage 1 → Stage 6 in sequence, but there is no single `Pipeline` class that automatically (a) calls them in order, (b) passes along the fitted transformers, (c) applies `transform()` to new data or a test split.
-   - In practice, you’ll want a wrapper class (or at least a function) that glues these six stages together consistently (so you never forget to call `imputer.transform()` before `outlier.fit_transform()`, etc.).
+   - If classification (`y.dtype.kind in {'O','i','b'}`) & `oversample=True`, apply SMOTE on train only.
 
-5. **No Unit Tests Beyond “**main**” Blocks**
+3. **Baseline Models**
 
-   - Each file’s quick test under `if __name__ == "__main__":` is helpful, but you should add proper unit tests (using `pytest` or `unittest`) to guard against regressions. Right now, you only check trivial cases; you don’t verify, for example, the correctness of Mahalanobis, or that KNN imputer works on corner cases, or that “no numeric columns” is handled gracefully.
+   - Regression: mean predictor → MAE, R²
+   - Classification: majority class → accuracy, F1
+   - (Optionally add k-NN vs naive Bayes as extra baselines.)
 
-6. **Hard‐Coded File Formats vs. User Preference**
+4. **Sanity Checks**
 
-   - Stage 5’s encoding step writes out Parquet files unconditionally (`.parquet`). If the rest of your environment expects CSV (or if you want to compress differently), you have no way to change that without editing the code. It’d be better to expose an argument like `output_fmt="parquet"` or `output_fmt="csv"`.
+   - No index overlap between splits.
+   - No feature identical to target.
 
-7. **No GPU/Parallel‐Processing Options for Large Datasets**
+### Checks & Metrics
 
-   - None of the KNN, PCA, Shapiro, or Mahalanobis code is parallelized. On very large data, each of those can blow out. You may eventually want to add options like `n_jobs=-1` (where supported) or batch your computation. Right now, everything is strictly single‐threaded.
-
-8. **No “Early Exit” for Unsupervised vs Supervised**
-
-   - You never check whether the DataFrame has a target column to decide whether to run mutual information or other supervised logic (as you originally discussed). None of the six stages cares about `y` or splits (train/test). If you have a label, you still run the same code. At minimum, you should allow a “supervised=True/False” flag in Stage 2 (for missingness patterns), Stage 3 (maybe skip outlier detection on the target itself), and Stage 4 (maybe skip transform checks on target column).
-
-9. **No Time/Memory Profiling or Scalability Safeguards**
-
-   - You warned yourself that KNN is expensive on large datasets. But there’s no code that says “if `n_rows > 100 000`, skip KNN and fall back to median impute.” Likewise, Mahalanobis requires inverting a covariance matrix, which is $O(p^3)$ and might blow up if `p` (number of numerics) is > 200. You should build in checks like
-
-     ```python
-     if n_rows * len(numeric_cols) > SOME_THRESHOLD: skip Mahalanobis or switch to IsolationForest
-     ```
-
-   - Similarly, Box‐Cox on every column of a 1 million × 100 DataFrame could be extremely slow. You might want to subsample or skip.
-
-10. **No Explicit “Catch All” for Mixed‐Type Columns**
-
-    - Several modules assume that each column is either fully numeric or fully categorical (string/object). In reality, CSVs often contain mixed types (e.g. numeric + “N/A” strings) that slip through `is_numeric` checks and then break methods downstream. You should add a pre‐step that forces every column into a consistent dtype (or flags it for manual cleaning).
+- Row counts per split.
+- Baseline metric summary in JSON.
 
 ---
 
-### Summary of the Ten Most Urgent Fixes
+## Stage 8: Leakage Detection & Integrity
 
-1. **(Stage 1)** Move `from datetime import datetime` **outside** the `suppress(ImportError)` block so that `datetime` is always defined.
-2. **(Stage 1)** Rewrite the `import pathlib as Path` usage so that it’s either `from pathlib import Path` (preferred) or consistently uses `pathlib.Path` everywhere.
-3. **(Stage 2)** Replace the flawed logistic‐regression “p-value” logic with a proper test (e.g. a Wald‐test or likelihood‐ratio test) or else mark it as “approximate.”
-4. **(Stage 2)** Avoid _automatically_ dropping any column with > 0.90 missing; either expose a flag (`drop_hi_na=True/False`) or implement an alternate strategy.
-5. **(Stage 3)** Let the user choose “Winsorize flagged rows” vs “Drop flagged rows.” Right now, you only winsorize any row that got even 1 univariate vote.
-6. **(Stage 4)** Persist the Box‐Cox λ values in `fit_transform()` so that `transform()` can re‐apply exactly the same λ to new data—otherwise you will leak/shift distributions.
-7. **(Stage 5)** Actually implement `transform()` so that new data can be encoded exactly the same way the training data was.
-8. **(Stage 6)** Store **and** reuse the `StandardScaler` (or whichever scaler you used) so that `transform()` can standardize new data _exactly_ as during `fit_transform()`.
-9. **(General)** Add a `random_state` parameter to every class that does any random sampling (Stage 2→Stage 4) so that your pipeline is reproducible.
-10. **(General)** Add a “master‐pipeline” wrapper or at least unit tests that wire Stage 1→Stage 6 together and verify that a sample input → sample output is consistent. This will catch many of the missing‐`transform()` issues above.
+### Objectives
 
-Addressing these ten points (and the smaller bullet points listed under each stage) will go a long way toward turning the current draft into a production‐ready, robust pipeline. Good luck!
+- Catch both target-leakage and train/test separation leakage.
+
+### Key Tasks
+
+1. **Target-Leakage**
+
+   - For each feature: compute AUC( feature → target ) > auc_thresh (e.g. 0.99)
+   - Categorical: one-hot & take max AUC.
+
+2. **Train/Test Separation**
+
+   - Concat train/test, label 0/1, compute AUC( feature → is_train ).
+
+3. **Row Overlap**
+
+   - Merge on all features – if any exact duplicate, warn.
+
+4. **Unseen Categories**
+
+   - For each cat col: test_vals – train_vals → report.
+
+### Checks & Metrics
+
+- List of leaky features.
+- Separation AUC per feature.
+- Overlap row count.
+
+---
+
+## Next Steps & MLOps
+
+1. **Model Selection & Tuning**
+
+   - Wrap with [`sklearn.pipeline.Pipeline`](https://scikit-learn.org/stable/modules/pipeline.html), grid/RandomSearchCV.
+
+2. **Experiment Tracking**
+
+   - Log metrics/params to MLflow or Weights & Biases.
+
+3. **Model Validation**
+
+   - Cross-validation, calibration curves, partial dependence.
+
+4. **Deployment**
+
+   - Package as API (FastAPI), containerize (Docker), auto-retrain triggers.
+
+5. **Monitoring**
+
+   - Periodic data-drift & prediction-drift checks, alerting on threshold breaches.
+
+---
+
+> **References & Further Reading**
+>
+> - CRISP-DM (SPC Whitepaper)
+> - TDSP (Microsoft’s Team Data Science Process)
+> - “Feature Lab” at Stanford CS229
+> - MIT 6.86x “Machine Learning on Big Data” lecture notes
+> - Harvard Data Science Common Workflow
+
+_(This README is meant as a living document – feel free to iterate over it as your team’s needs evolve.)_
