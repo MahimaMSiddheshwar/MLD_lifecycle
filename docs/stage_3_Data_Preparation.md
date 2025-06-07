@@ -135,7 +135,7 @@ python -m ml_pipeline.prepare \
 
 ---
 
-## 4·½. [Feature Selection & Early Train/Test Split](#4.5-feature-selection--split)
+## 3.H. [Feature Selection & Early Train/Test Split](#4.5-feature-selection--split)
 
 > **Why here?** Any statistic that _uses_ the target (variance filter,  
 > mutual-information, Cramer-V, leakage sniff, etc.) must be learned on
