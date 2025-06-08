@@ -1,5 +1,5 @@
 [project]
-name = "mld-lifecycle"
+name = "Machine-Learning-Development-lifecycle"
 version = "0.1.0"
 description = "Machine Learning Pipeline for me and other ML developers"
 authors = [
