@@ -69,7 +69,7 @@ class ProbabilisticAnalysis:
         self.copula_model: GaussianMultivariate | None = None
         # Mahalanobis distance series
         self.md_series: pd.Series | None = None
-        # permutation importances
+        # permutation importances only if we have high car
         self.perm_importance_: pd.Series | None = None
 
     def impute_missing(self, method: str = "mice") -> pd.DataFrame:

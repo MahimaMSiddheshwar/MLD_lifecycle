@@ -1,72 +1,40 @@
-# ─────────────────────────────────────────────────────────────
-#   pyproject.toml   – unified build & dependency spec
-# ─────────────────────────────────────────────────────────────
-[build-system]
-requires      = ["setuptools>=67", "wheel"]
-build-backend = "setuptools.build_meta"
-
-# ─────────────────────────────────────────────────────────────
 [project]
-name            = "mldlc-toolkit"
-version         = "0.1.0"
-description     = "Omni data-ingestion, EDA & other MLDLC helpers"
-authors         = [{ name = "Aashay4123", email = "aashayphirke5798@gmail.com" }]
-readme          = "README.md"
-requires-python = ">=3.10"
-
-# — Core run-time deps (Phase-2 collector works out-of-the-box)
+name = "mld-lifecycle"
+version = "0.1.0"
+description = "Machine Learning Pipeline for me and other ML developers"
+authors = [
+    {name = "Aashay Phirke"}
+]
+readme = "README.md"
+requires-python = "3.12.10"
 dependencies = [
-  "pandas>=2.0",
-  "requests",
-  "boto3",                     # S3
-  "SQLAlchemy>=2.0",
-  "psycopg2-binary",           # Postgres driver (optional but common)
-  "pymongo",
-  "kafka-python",
-  "gspread",
-  "oauth2client",              # gspread auth helper
-  "paho-mqtt",
-  "pydantic",            # pulled by pandera, but list explicitly
-  "missingno",
-  "imblearn",            # SMOTE / NearMiss
-  "great_expectations",  # only if you plan to use --gx flag
-  "scikit-learn>=1.4",
-  "category-encoders>=2.6"
-  "pytest>=7.0",
-  "pytest-cov",
-  "flake8",
-  "black",
-  "mypy",
-  "statsmodels>=0.14",
-  "pingouin>=0.5",
-  "ydata-profiling>=4.6"
+    "pandas (>=2.0,<3.0)",
+    "requests (>=2.32.3,<3.0.0)",
+    "boto3 (>=1.38.32,<2.0.0)",
+    "sqlalchemy (>=2.0,<3.0)",
+    "psycopg2-binary (>=2.9.10,<3.0.0)",
+    "pymongo (>=4.13.0,<5.0.0)",
+    "kafka-python (>=2.2.11,<3.0.0)",
+    "gspread (>=6.2.1,<7.0.0)",
+    "oauth2client (>=4.1.3,<5.0.0)",
+    "paho-mqtt (>=2.1.0,<3.0.0)",
+    "pydantic (>=2.11.5,<3.0.0)",
+    "missingno (>=0.5.2,<0.6.0)",
+    "imbalanced-learn (>=0.11,<0.12)",
+    "great-expectations (>=1.5.0,<2.0.0)",
+    "scikit-learn (>=1.4,<2.0)",
+    "category-encoders (>=2.6,<3.0)",
+    "pytest (>=7.0,<8.0)",
+    "pytest-cov (>=6.1.1,<7.0.0)",
+    "flake8 (>=7.2.0,<8.0.0)",
+    "black (>=25.1.0,<26.0.0)",
+    "mypy (>=1.16.0,<2.0.0)",
+    "statsmodels (>=0.14,<0.15)",
+    "pingouin (>=0.5,<0.6)",
+    "ydata-profiling (>=4.6,<5.0)"
 ]
 
-# — Optional extras  -----------------------------------------------------------
-#    install with:  pip install -e .[eda]   or  pip install -e .[dev]
-[project.optional-dependencies]
-eda = [
-  "statsmodels>=0.14",
-  "pingouin>=0.5",
-]
-profile = [
-  "ydata-profiling>=4.6",
-]
-dev = [
-  # everything from eda + profile
-  "statsmodels>=0.14",
-  "pingouin>=0.5",
-  "ydata-profiling>=4.6",
-  # lint / test tools (if you like)
-  "pytest",
-  "ruff",
-]
 
-# ─────────────────────────────────────────────────────────────
-[tool.setuptools]                # source layout
-package-dir = {"" = "src"}
-packages    = ["data_ingest", "Data_Cleaning", "Data_Analysis", "Feature_Engineering"]
-
-# ─────────────────────────────────────────────────────────────
-[project.scripts]
-omni-collect = "data_ingest.omni_cli:main"
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
