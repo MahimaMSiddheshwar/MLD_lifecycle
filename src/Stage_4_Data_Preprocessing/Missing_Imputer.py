@@ -327,7 +327,6 @@ class Stage2Imputer:
           - KS p‐value: ks_2samp(orig_nonnull, imp_nonnull)[1]
           - VARIANCE_RATIO: var(imputed) / var(orig)
           - COVARIANCE_CHANGE: sum(|cov_after[col] – cov_before[col]| / (|cov_before[col]| + 1e-9))
-
         Returns (ks_p, var_ratio, cov_change).
         """
         orig_nonnull = orig.dropna().values

@@ -19,7 +19,7 @@ import logging
 import argparse
 import json
 from pathlib import Path
-
+import json
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -29,6 +29,8 @@ from src.Data_Preprocessing.improved_stage2 import Stage2Imputer
 from src.Data_Preprocessing.scaling_transform_stage3 import Stage4Transform
 from src.Data_Preprocessing.OutlierDetection_stage4 import OutlierDetector
 from src.Feature_Engineering.encoding_stage5 import Stage5Encoder
+from src.advanced_splitting import AdvancedFeatureSplitterV4
+from src.advanced_construction import AdvancedFeatureConstructorV4
 
 
 def ingest(source, mode="file", output_dir="outputs"):
@@ -391,6 +393,32 @@ def run_all(
     ti, vi, tsi = impute(t, v, tst, random_state, output_dir)
     ts, vs, tss = scale_transform(ti, vi, tsi, output_dir)
     to, vo, tso = detect_outliers(ts, vs, tss, output_dir)
+    splitter = AdvancedFeatureSplitterV4(
+        n_jobs=4, cache_json=True, strip_html=True, flatten_xml=True,
+        # you can pass mixed_patterns=..., url_columns=[...], etc.
+    )
+    train_fs = splitter.transform(to)
+    val_fs = splitter.transform(vo)
+    test_fs = splitter.transform(tso)
+    # Optionally log splitter.report_ to JSON
+    with open(Path(output_dir)/"splitter_report.json", "w") as f:
+    json.dump(splitter.report_, f, indent=2)
+
+    # Stage 7: Advanced feature construction
+    constructor = AdvancedFeatureConstructorV4(
+        n_jobs=4,
+        group_aggs={'user_id': ['mean', 'count']},
+        crosses=[('colA', 'colB')],
+        text_stat_cols=['comment'],
+        rolling_windows={'value': 5},
+        custom_funcs={'range': lambda df: df['max']-df['min']},
+    )
+    train_fc = constructor.transform(train_fs)
+    val_fc = constructor.transform(val_fs)
+    test_fc = constructor.transform(test_fs)
+    # Optionally log constructor.report_ to JSON
+    with open(Path(output_dir)/"constructor_report.json", "w") as f:
+    json.dump(constructor.report_, f, indent=2)
     return encode(to, vo, tso, output_dir)
 
 
@@ -433,19 +461,14 @@ if __name__ == "__main__":
 # Advanced Feature Splitter and Constructor Integration
 
 ```diff
---- pipeline.py
-+++ pipeline.py
-
-
 @@ imports
- from src.Feature_Engineering.encoding_stage5 import Stage5Encoder
-+from src.advanced_splitting import AdvancedFeatureSplitterV4
-+from src.advanced_construction import AdvancedFeatureConstructorV4
+-from src.Feature_Engineering.encoding_stage5 import Stage5Encoder
+
 
 
 @@
 -def run_all(
-+def run_all(
+def run_all(
      source: str,
      mode: str="file",
      target_column: Optional[str]=None,
@@ -457,37 +480,12 @@ if __name__ == "__main__":
 @ @
      # Stage 5: Outlier detection
      to, vo, tso=detect_outliers(ts, vs, tss, output_dir)
-+
-+    # Stage 6: Advanced feature splitting
-+ splitter=AdvancedFeatureSplitterV4(
-+ n_jobs=4, cache_json=True, strip_html=True, flatten_xml=True,
-+        # you can pass mixed_patterns=..., url_columns=[...], etc.
-+)
-+ train_fs=splitter.transform(to)
-+ val_fs=splitter.transform(vo)
-+ test_fs=splitter.transform(tso)
-+    # Optionally log splitter.report_ to JSON
-+ with open(Path(output_dir)/"splitter_report.json", "w") as f:
-+ json.dump(splitter.report_, f, indent=2)
-+
-+    # Stage 7: Advanced feature construction
-+ constructor=AdvancedFeatureConstructorV4(
-+ n_jobs=4,
-+        group_aggs={'user_id': ['mean', 'count']},
-+        crosses=[('colA', 'colB')],
-+        text_stat_cols=['comment'],
-+        rolling_windows={'value': 5},
-+        custom_funcs={'range': lambda df: df['max']-df['min']},
-+)
-+ train_fc=constructor.transform(train_fs)
-+ val_fc=constructor.transform(val_fs)
-+ test_fc=constructor.transform(test_fs)
-+    # Optionally log constructor.report_ to JSON
-+ with open(Path(output_dir)/"constructor_report.json", "w") as f:
-+ json.dump(constructor.report_, f, indent=2)
-+
-+    # Stage 8: Encoding
-+ return encode(train_fc, val_fc, test_fc, output_dir)
+
+    # Stage 6: Advanced feature splitting
+
+
+    # Stage 8: Encoding
+ return encode(train_fc, val_fc, test_fc, output_dir)
 ```
 
 1. ** Imports**: Bring in `AdvancedFeatureSplitterV4` and `AdvancedFeatureConstructorV4`.
