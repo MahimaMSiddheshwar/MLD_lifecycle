@@ -1,139 +1,95 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# params.yaml  –  Central place for every tunable knob used by dvc.yaml
-#               Adjust or remove keys as needed; stages read these via ${params:…}
-# ─────────────────────────────────────────────────────────────────────────────
+# params.yaml ─ Parameter file for entire MLDLC pipeline
 
-# ─────────── Phase-2 · DATA COLLECTION (omni_cli flags) ─────────────────────
+# ────────────────────── PHASE-2 · DATA COLLECTION ─────────────────────────────
 collect:
-  # Example: pull a CSV file from local disk and save to data/raw/
-  # (you can also supply "sql …" or "rest …" etc. via environment variables)
-  args: >
-    file data/raw/users.csv
-    --redact-pii
-    --save
+  args: "--source local --format csv" # Example: update based on CLI of omni_cli
 
-# ─────────── Phase-3 · DATA PREPARATION (ml_pipeline.prepare flags) ─────────
-prep:
-  # Use KNNImputer instead of median/mode?
-  knn: false # true → use IterativeImputer, false → median/mode
-  # Outlier method: iqr (default), zscore, or iso (isolation forest)
-  outlier: "iqr"
-  # Scaler: standard, robust, or yeo (Yeo–Johnson)
-  scaler: "standard"
-  # Balance method: none, smote, or nearmiss
-  balance: "none"
-  # Note: 'target' is used by other stages (must match your actual label)
-  target: "is_churn"
+# ────────────────────── PHASE-3 · DATA PREPARATION ─────────────────────────────
+prepare:
+  args: "--clean --impute --scale"
+  max_missing_frac_drop: 0.9
+  numeric_impute_methods:
+    - mean
+    - median
+    - knn
+    - mice
+    - random
+  categorical_impute_methods:
+    - mode
+    - constant
+    - random
+  missingness_test:
+    - littles_test
+    - logistic_missingness
 
-# ─────────── Phase-4 · EXPLORATORY DATA ANALYSIS (EDA) ────────────────────────
-eda:
-  # Which EDA modes to run: all, uva, bva, mva (see EDA.py)
-  mode: "all"
-  # Target column for EDA’s bivariate / leakage checks
-  target: "is_churn"
-  # Generate a full HTML profile? (requires ydata-profiling installed)
-  profile: true
+# ────────────────────── SHARED PARAMS ACROSS STAGES ────────────────────────────
+target: "target_column_name" # Replace with your dataset’s target column
 
-# ─────────── Phase-4½ · PROBABILISTIC ANALYSIS ───────────────────────────────
+# ────────────────────── PHASE-4½ · PROBABILISTIC ANALYSIS ───────────────────────
 probabilistic:
-  # Impute missing via: mice (IterativeImputer), knn (KNNImputer), or simple (mean)
-  impute_method: "mice"
-  # If true, run PIT transform
-  do_pit: false
-  # If true, run QuantileTransformer → normal
-  do_quantile: false
-  # If true, fit a Gaussian copula and dump JSON
-  do_copula: false
-  # Target column (Shared across stages; used for MI and conditional probabilities)
-  target: "is_churn"
+  impute_method: "knn" # method to use before prob. analysis (if any missing values)
+  do_pit: true # whether to apply Probability Integral Transform
+  do_quantile: true # include quantile binning and KL-divergence
+  do_copula: false # turn on for copula-based dependence tests
 
-# ─── Phase-4½ · FEATURE SELECTION (feature_select.py thresholds) ────────────
-feature_select:
-  # near-zero variance threshold (VarianceThreshold)
-  nzv_threshold: 1e-5
-  # drop any numeric pair whose abs(corr) ≥ this value
-  corr_threshold: 0.95
-  # drop bottom X% by mutual info / F-score
-  mi_quantile: 0.10
-  # (the script should accept these flags; otherwise leave blank)
-  args: >-
-    --nzv_threshold ${feature_select.nzv_threshold}
-    --corr_threshold ${feature_select.corr_threshold}
-    --mi_quantile ${feature_select.mi_quantile}
+# ────────────────────── PHASE-4½ · FEATURE SELECTION ────────────────────────────
+feature_selection:
+  args: "--auto --threshold=0.01"
+  method: "mutual_info" # Options: mutual_info, f_classif, chi2, boruta, etc.
+  correlation_threshold: 0.95
+  variance_threshold: 0.01
+  max_features: 150
 
-# ─────────── Phase-5 · FEATURE ENGINEERING ──────────────────────────────────
-features:
-  # Numeric scaler: standard | minmax | robust | none
-  numeric_scaler: "robust"
-  # Power transformer: yeo | boxcox | quantile | None
-  numeric_power: "yeo"
-  # Which numeric columns to log-transform? (list)
-  log_cols: ["revenue"]
-  # Binning: { "column_name": num_bins }
-  quantile_bins:
-    age: 4
-  # Degree of polynomial features (None or int)
-  polynomial_degree: 2
-  # Whether to generate interaction terms (True/False)
-  interactions: false
-  # Rare‐category threshold (float <1 for freq, or int for absolute count)
-  rare_threshold: 0.01
-  # Categorical encoding: onehot, ordinal, target, woe, hash, freq, none
-  cat_encoding: "target"
-  # Text vectorizer: tfidf, count, hashing, or None
-  text_vectorizer: "tfidf"
-  text_cols: ["review"]
-  # Which datetime cols to expand? (year/month/etc.)
-  datetime_cols: ["last_login"]
-  # Cyclical mapping: { "colname": period }
-  cyclical_cols:
-    hour: 24
-  # Days‐since (reference): { "colname": "YYYY-MM-DD" or "today" }
-  date_delta_cols:
-    signup_date: "2023-01-01"
-  # Aggregations: { "groupby_col": [ "agg1", "agg2", … ] }
-  aggregations:
-    customer_id: ["amount_mean", "amount_sum"]
-  # Pre‐column‐transform filters:
-  drop_nzv: true # near‐zero‐variance drop?
-  corr_threshold: 0.95 # numeric correlation cutoff for pruning
-  mi_quantile: 0.10 # drop bottom X% (mutual info / F‐score)
-  # Target appears here just to drop from X during fit
-  target: "is_churn"
-
-# ────────── Phase-5½ · SPLIT & BASELINE BENCHMARK ──────────────────────────
-split_baseline:
-  # Random seed for train/val/test splits
+# ────────────────────── PHASE-4½ · SPLIT & BASELINE ─────────────────────────────
+split:
   seed: 42
-  # Stratify by target label?
   stratify: true
-  # Oversample (SMOTE) training fold?
   oversample: false
-  # Target column is reused
-  target: "is_churn"
+  val_size: 0.15
+  test_size: 0.15
 
-# ─────────── Phase-6 · MODEL TRAINING & HYPERPARAMETERS ─────────────────────
-train:
-  # Example hyperparameters; adapt to your model.train script
-  learning_rate: 0.01
-  n_estimators: 100
+# ────────────────────── PHASE-5 · FEATURE ENGINEERING ───────────────────────────
+feature_engineering:
+  args: "--auto-construct --add-polynomials"
+  interaction_depth: 2
+  add_lags: false
+  top_k_interactions: 25
+  groupwise_aggs: false
+
+# ────────────────────── PHASE-6 · TRAINING ──────────────────────────────────────
+training:
+  model_type: "xgboost" # or: "random_forest", "logistic_regression", etc.
+  early_stopping_rounds: 10
+  eval_metric: "logloss"
+  n_estimators: 500
+  learning_rate: 0.03
   max_depth: 6
-  batch_size: 32
-  epochs: 50
-  # Any extra CLI flags your train script expects
-  args: ""
+  regularization:
+    alpha: 0.1
+    lambda: 1.0
+  tune: true
+  hyperparam_search:
+    method: "optuna" # or: grid, random, hyperopt
+    trials: 50
+    cv_folds: 5
+    scoring: "roc_auc"
 
-# ─────────── Phase-7 · EVALUATION OPTIONS ───────────────────────────────────
-evaluate:
-  # If your evaluate script accepts thresholds or extra flags, place here
-  args: ""
+# ────────────────────── PHASE-7 · EVALUATION ────────────────────────────────────
+evaluation:
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1
+    - roc_auc
+    - log_loss
 
-# ─────────── Phase-8 · PACKAGING & EXPORT ───────────────────────────────────
-package:
-  # If your package script needs extra flags, supply them here
-  args: ""
+# ────────────────────── PHASE-8 · PACKAGING ─────────────────────────────────────
+packaging:
+  format: "onnx"
+  output_path: "artefacts/model.onnx"
 
-# ─────────── Phase-9 · DEPLOYMENT (OPTIONAL) ─────────────────────────────────
-deploy:
-  # If your deploy script needs registry URLs / credentials as flags, put them here
-  args: ""
+# ────────────────────── PHASE-9 · DEPLOYMENT ────────────────────────────────────
+deployment:
+  registry_url: "https://my-model-registry.io"
+  credentials_env: "REGISTRY_AUTH_TOKEN"
