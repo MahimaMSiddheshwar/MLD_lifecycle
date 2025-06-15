@@ -1,497 +1,190 @@
-#!/usr/bin/env python3
-"""
-pipeline.py
-
-Function-based ML pipeline for stages 0–6:
-  0) ingest: Data ingestion to Parquet
-  1) inspect: Data inspection and HTML report
-  2) split: Train/Val/Test split to Parquet
-  3) impute: Missing-value imputation + log
-  4) scale_transform: Scaling/transform + log
-  5) detect_outliers: Outlier detection + log
-  6) encode: Categorical encoding + log
-
-Each function reads/writes DataFrames and logs metadata for reproducibility.
-"""
-
-from typing import Optional, Tuple
-import logging
-import argparse
-import json
-from pathlib import Path
-import json
+from zenml.pipelines import pipeline
+from zenml.steps import step, Output
+from zenml.integrations.mlflow.mlflow_step_decorator import enable_mlflow
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from typing import Tuple, Any
+import mlflow
+import json
+import os
+from sklearn.dummy import DummyClassifier
+from sklearn.metrics import accuracy_score
 
+from smart_feature_transformer import SmartFeatureTransformer
 from src.Data_Ingest_diagnose.data_injection_stage1 import DataCollector
 from src.Data_Ingest_diagnose.data_inspection import DataFrameHealthCheck
 from src.Data_Preprocessing.improved_stage2 import Stage2Imputer
-from src.Data_Preprocessing.scaling_transform_stage3 import Stage4Transform
 from src.Data_Preprocessing.OutlierDetection_stage4 import OutlierDetector
 from src.Feature_Engineering.encoding_stage5 import Stage5Encoder
 from src.advanced_splitting import AdvancedFeatureSplitterV4
 from src.advanced_construction import AdvancedFeatureConstructorV4
+from utils.monitor import monitor
+
+mlflow.set_tag("zenml_pipeline", "training_pipeline_v1")
 
 
-def ingest(source, mode="file", output_dir="outputs"):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    collector = DataCollector(pii_mask=True, validate=False)
-    df = collector.read_file(
-        source) if mode == "file" else collector.read_sql(source)
-    path = output_dir/"0_raw.parquet"
-    df.to_parquet(path, index=False)
-    print(f"[INGEST] Raw data saved to {path}")
+@step
+@monitor(name="ingest_data", log_args=True, log_result=True, track_input_size=True, track_memory=True, retries=1)
+def ingest_data() -> Output(data=pd.DataFrame):
+    df = DataCollector(pii_mask=True).read_file("data.csv")
     return df
 
 
-def inspect(df, target_column=None, output_dir="outputs"):
-    output_dir = Path(output_dir)
-    inspector = DataFrameHealthCheck(df, target_col=target_column)
-    inspector.run_all_checks()
-    report = output_dir/"1_inspection_report.html"
-    inspector.generate_report(report)
-    print(f"[INSPECT] Report saved to {report}")
-    return df
+@step
+@monitor(name="inspect_data", log_args=True, log_result=False, track_input_size=True)
+def inspect_data(data: pd.DataFrame) -> Output(valid_data=pd.DataFrame):
+    checker = DataFrameHealthCheck(data)
+    checker.run_all_checks()
+    return data
 
 
-def split(df, target_column=None, test_size=0.1, val_size=0.1,
-          random_state=42, output_dir="outputs"):
-    output_dir = Path(output_dir)
-    train_val, test = train_test_split(
-        df, test_size=test_size, random_state=random_state,
-        stratify=(df[target_column] if target_column else None)
-    )
-    train, val = train_test_split(
-        train_val, test_size=val_size/(1-test_size),
-        random_state=random_state,
-        stratify=(train_val[target_column] if target_column else None)
-    )
-    for name, subset in [("2_train", train), ("3_val", val), ("4_test", test)]:
-        subset.to_parquet(output_dir/f"{name}.parquet", index=False)
-        print(f"[SPLIT] {name} set saved")
+@step
+@monitor(name="split_data", log_args=True, log_result=False, track_input_size=True, track_memory=True)
+def split_data(data: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
+    from sklearn.model_selection import train_test_split
+    train_val, test = train_test_split(data, test_size=0.1, random_state=42)
+    train, val = train_test_split(train_val, test_size=0.1, random_state=42)
+
+    # Save splits to disk
+    os.makedirs("artifacts/splits", exist_ok=True)
+    train.to_parquet("artifacts/splits/train.parquet", index=False)
+    val.to_parquet("artifacts/splits/val.parquet", index=False)
+    test.to_parquet("artifacts/splits/test.parquet", index=False)
+
     return train, val, test
 
 
-def impute(train, val, test, random_state=42, output_dir="outputs"):
-    output_dir = Path(output_dir)
-    imputer = Stage2Imputer(random_state=random_state)
+@enable_mlflow
+@step
+@monitor(name="impute_data", log_args=True, track_input_size=True, track_memory=True, retries=1)
+def impute_data(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
+    imputer = Stage2Imputer()
     imputer.fit(train)
-    train_i = imputer.transform(train)
-    val_i = imputer.transform(val)
-    test_i = imputer.transform(test)
-    for name, df_i in [("5_train_imputed", train_i),
-                       ("6_val_imputed", val_i),
-                       ("7_test_imputed", test_i)]:
-        df_i.to_parquet(output_dir/f"{name}.parquet", index=False)
-    with open(output_dir/"impute_log.json", "w") as f:
-        json.dump(imputer.report, f, indent=2)
-    print("[IMPUTE] Data imputed and log saved")
-    return train_i, val_i, test_i
+
+    # Save imputer report to MLflow
+    with open("imputer_report.json", "w") as f:
+        json.dump(imputer.report, f)
+    mlflow.log_artifact("imputer_report.json")
+
+    return imputer.transform(train), imputer.transform(val), imputer.transform(test)
 
 
-def scale_transform(train, val, test, output_dir="outputs"):
-    output_dir = Path(output_dir)
-    scaler = Stage4Transform()
-    train_s = scaler.fit_transform(train)
-    val_s = scaler.transform(val)
-    test_s = scaler.transform(test)
-    for idx, df_s in enumerate([train_s, val_s, test_s], start=8):
-        df_s.to_parquet(output_dir/f"{idx}_scaled.parquet", index=False)
-    with open(output_dir/"scale_log.json", "w") as f:
-        json.dump(scaler.report, f, indent=2)
-    print("[SCALE] Scaling complete and log saved")
-    return train_s, val_s, test_s
+@enable_mlflow
+@step
+@monitor(name="scale_transform", log_args=True, track_input_size=True, track_memory=True, log_result=False)
+def scale_transform(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
+    numeric = train.select_dtypes(include='number').columns.tolist()
+    transformer = SmartFeatureTransformer(mode="adaptive", verbose=False)
+
+    X_train = transformer.fit_transform(train, numeric)
+    X_val = transformer.transform(val)
+    X_test = transformer.transform(test)
+
+    mlflow.sklearn.log_model(transformer, artifact_path="scaler_model")
+
+    return X_train, X_val, X_test
 
 
-def detect_outliers(train, val, test, output_dir="outputs"):
-    output_dir = Path(output_dir)
+@enable_mlflow
+@step
+@monitor(name="detect_outliers", log_args=True, track_input_size=True, track_memory=True)
+def detect_outliers(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
     detector = OutlierDetector()
     train_o = detector.fit_transform(train)
-    val_o = detector.transform(val)
-    test_o = detector.transform(test)
-    for idx, df_o in enumerate([train_o, val_o, test_o], start=11):
-        df_o.to_parquet(output_dir/f"{idx}_clean.parquet", index=False)
-    with open(output_dir/"outlier_log.json", "w") as f:
-        json.dump(detector.report, f, indent=2)
-    print("[OUTLIER] Outliers handled and log saved")
-    return train_o, val_o, test_o
+
+    with open("outlier_log.json", "w") as f:
+        json.dump(detector.report, f)
+    mlflow.log_artifact("outlier_log.json")
+
+    return train_o, detector.transform(val), detector.transform(test)
 
 
-def encode(train, val, test, output_dir="outputs"):
-    output_dir = Path(output_dir)
+@step
+@monitor(name="feature_split", log_args=True, track_input_size=True, track_memory=True)
+def feature_split(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
+    splitter = AdvancedFeatureSplitterV4(n_jobs=2)
+    return splitter.transform(train), splitter.transform(val), splitter.transform(test)
+
+
+@step
+@monitor(name="feature_construct", log_args=True, track_input_size=True, track_memory=True)
+def feature_construct(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
+    constructor = AdvancedFeatureConstructorV4()
+    return constructor.transform(train), constructor.transform(val), constructor.transform(test)
+
+
+@enable_mlflow
+@step
+@monitor(name="encode", log_args=True, log_result=True, track_input_size=True, track_memory=True)
+def encode(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
     encoder = Stage5Encoder()
     train_e = encoder.encode_train(train)
     val_e = encoder.encode_test(val)
     test_e = encoder.encode_test(test)
-    for idx, df_e in enumerate([train_e, val_e, test_e], start=14):
-        df_e.to_parquet(output_dir/f"{idx}_encoded.parquet", index=False)
-    with open(output_dir/"encode_log.json", "w") as f:
-        json.dump(encoder.report, f, indent=2)
-    print("[ENCODE] Encoding done and log saved")
+
+    with open("encoding_report.json", "w") as f:
+        json.dump(encoder.report, f)
+    mlflow.log_artifact("encoding_report.json")
+
+    # Save processed final versions
+    os.makedirs("artifacts/final_data", exist_ok=True)
+    train_e.to_parquet(
+        "artifacts/final_data/train_encoded.parquet", index=False)
+    val_e.to_parquet("artifacts/final_data/val_encoded.parquet", index=False)
+    test_e.to_parquet("artifacts/final_data/test_encoded.parquet", index=False)
+
     return train_e, val_e, test_e
 
 
-def run_all(source, mode="file", target_column=None,
-            test_size=0.1, val_size=0.1, random_state=42,
-            output_dir="outputs"):
-    df = ingest(source, mode, output_dir)
-    df = inspect(df, target_column, output_dir)
-    train, val, test = split(df, target_column, test_size,
-                             val_size, random_state, output_dir)
-    train_i, val_i, test_i = impute(train, val, test, random_state, output_dir)
-    train_s, val_s, test_s = scale_transform(
-        train_i, val_i, test_i, output_dir)
-    train_o, val_o, test_o = detect_outliers(
-        train_s, val_s, test_s, output_dir)
-    return encode(train_o, val_o, test_o, output_dir)
+@enable_mlflow
+@step
+@monitor(name="baseline_model")
+def train_baseline(train: pd.DataFrame, val: pd.DataFrame) -> Output(score=float):
+    model = DummyClassifier(strategy="most_frequent")
+    model.fit(train.drop(columns="target"), train["target"])
+    preds = model.predict(val.drop(columns="target"))
+    acc = accuracy_score(val["target"], preds)
+
+    mlflow.log_metric("baseline_accuracy", acc)
+    mlflow.sklearn.log_model(model, artifact_path="baseline_model")
+
+    return acc
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Function-based ML pipeline")
-    parser.add_argument("source", help="File path or SQL connection string")
-    parser.add_argument("--mode", choices=["file", "sql"], default="file")
-    parser.add_argument("--target", help="Target column name")
-    parser.add_argument("--test_size", type=float, default=0.1)
-    parser.add_argument("--val_size", type=float, default=0.1)
-    parser.add_argument("--random_state", type=int, default=42)
-    parser.add_argument("--output", default="outputs")
-    parser.add_argument("--all", action="store_true", help="Run all stages")
-    parser.add_argument("--stage", choices=[
-        "ingest", "inspect", "split", "impute",
-        "scale_transform", "detect_outliers", "encode"
-    ], help="Run a single stage")
-    args = parser.parse_args()
-
-    if args.all:
-        run_all(args.source, args.mode, args.target,
-                args.test_size, args.val_size,
-                args.random_state, args.output)
-    elif args.stage:
-        # minimal single-stage runner (tweak as needed)
-        from pathlib import Path
-        import pandas as pd
-        mapping = {
-            "inspect": "0_raw.parquet",
-            "split":   "0_raw.parquet",
-            "impute":  "2_train.parquet",
-            "scale_transform": "5_train_imputed.parquet",
-            "detect_outliers": "8_train_scaled.parquet",
-            "encode":  "11_train_clean.parquet"
-        }
-        if args.stage == "ingest":
-            ingest(args.source, args.mode, args.output)
-        else:
-            df_in = pd.read_parquet(Path(args.output)/mapping[args.stage])
-            func = globals()[args.stage]
-            if args.stage == "split":
-                func(df_in, args.target, args.test_size,
-                     args.val_size, args.random_state, args.output)
-            else:
-                # for multi-input stages you'll load train/val/test manually
-                func(df_in)
-    else:
-        parser.print_help()
-
-
-if __name__ == "__main__":
-    main()
-# ==============================================================
-
-#!/usr/bin/env python3
-"""
-pipeline.py
-
-Function-based ML pipeline for stages 0–6 with argument validation,
-logging, Parquet outputs, and JSON metadata reporting.
-"""
-
-
-# Configure module-level logger
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger(__name__)
-
-
-def _validate_sizes(test_size: float, val_size: float) -> None:
-    if not 0 < test_size < 1:
-        raise ValueError("test_size must be between 0 and 1")
-    if not 0 <= val_size < 1:
-        raise ValueError("val_size must be between 0 and 1")
-    if test_size + val_size >= 1:
-        raise ValueError("test_size + val_size must be < 1")
-
-
-def ingest(source: str, mode: str = "file", output_dir: str = "outputs") -> pd.DataFrame:
-    """
-    Stage 0: Read raw data into a DataFrame and save to Parquet.
-    """
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    collector = DataCollector(pii_mask=True, validate=False)
-    if mode == "file":
-        if not Path(source).exists():
-            raise FileNotFoundError(f"Input file not found: {source}")
-        df = collector.read_file(source)
-    else:
-        df = collector.read_sql(source)
-    path = out / "0_raw.parquet"
-    df.to_parquet(path, index=False)
-    logger.info(f"[INGEST] Raw data saved to {path}")
-    return df
-
-
-def inspect(df: pd.DataFrame, target_column: Optional[str] = None, output_dir: str = "outputs") -> pd.DataFrame:
-    """
-    Stage 1: Run health checks and output an HTML report.
-    """
-    out = Path(output_dir)
-    inspector = DataFrameHealthCheck(df, target_col=target_column)
-    inspector.run_all_checks()
-    report = out / "1_inspection_report.html"
-    inspector.generate_report(report)
-    logger.info(f"[INSPECT] HTML report saved to {report}")
-    return df
-
-
-def split(
-    df: pd.DataFrame,
-    target_column: Optional[str] = None,
-    test_size: float = 0.1,
-    val_size: float = 0.1,
-    random_state: int = 42,
-    output_dir: str = "outputs"
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Stage 2: Stratified train/val/test split.
-    """
-    _validate_sizes(test_size, val_size)
-    out = Path(output_dir)
-    stratify = df[target_column] if target_column else None
-    train_val, test = train_test_split(
-        df, test_size=test_size, random_state=random_state, stratify=stratify)
-    val_ratio = val_size / (1 - test_size)
-    train, val = train_test_split(train_val, test_size=val_ratio, random_state=random_state, stratify=(
-        train_val[target_column] if target_column else None))
-    for name, subset in (("2_train", train), ("3_val", val), ("4_test", test)):
-        path = out / f"{name}.parquet"
-        subset.to_parquet(path, index=False)
-        logger.info(f"[SPLIT] {name} saved to {path}")
-    return train, val, test
-
-
-def impute(
-    train: pd.DataFrame,
-    val: pd.DataFrame,
-    test: pd.DataFrame,
-    random_state: int = 42,
-    output_dir: str = "outputs"
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Stage 3: Fit & apply missing-value imputation. Log parameters.
-    """
-    out = Path(output_dir)
-    imputer = Stage2Imputer(random_state=random_state)
-    imputer.fit(train)
-    train_i = imputer.transform(train)
-    val_i = imputer.transform(val)
-    test_i = imputer.transform(test)
-    for tag, df_i in (("5_train_imputed", train_i), ("6_val_imputed", val_i), ("7_test_imputed", test_i)):
-        path = out / f"{tag}.parquet"
-        df_i.to_parquet(path, index=False)
-    with open(out / "impute_log.json", "w") as f:
-        json.dump(imputer.report, f, indent=2)
-    logger.info("[IMPUTE] Completed and logged")
-    return train_i, val_i, test_i
-
-
-def scale_transform(
-    train: pd.DataFrame,
-    val: pd.DataFrame,
-    test: pd.DataFrame,
-    output_dir: str = "outputs"
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Stage 4: Fit & apply scaling/transform. Log parameters.
-    """
-    out = Path(output_dir)
-    scaler = Stage4Transform()
-    train_s = scaler.fit_transform(train)
-    val_s = scaler.transform(val)
-    test_s = scaler.transform(test)
-    for idx, df_s in enumerate((train_s, val_s, test_s), start=8):
-        path = out / f"{idx}_scaled.parquet"
-        df_s.to_parquet(path, index=False)
-    with open(out / "scale_log.json", "w") as f:
-        json.dump(scaler.report, f, indent=2)
-    logger.info("[SCALE] Completed and logged")
-    return train_s, val_s, test_s
-
-
-def detect_outliers(
-    train: pd.DataFrame,
-    val: pd.DataFrame,
-    test: pd.DataFrame,
-    output_dir: str = "outputs"
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Stage 5: Fit & remove/cap outliers. Log stats.
-    """
-    out = Path(output_dir)
-    detector = OutlierDetector()
-    train_o = detector.fit_transform(train)
-    val_o = detector.transform(val)
-    test_o = detector.transform(test)
-    for idx, df_o in enumerate((train_o, val_o, test_o), start=11):
-        path = out / f"{idx}_clean.parquet"
-        df_o.to_parquet(path, index=False)
-    with open(out / "outlier_log.json", "w") as f:
-        json.dump(detector.report, f, indent=2)
-    logger.info("[OUTLIER] Completed and logged")
-    return train_o, val_o, test_o
-
-
-def encode(
-    train: pd.DataFrame,
-    val: pd.DataFrame,
-    test: pd.DataFrame,
-    output_dir: str = "outputs"
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Stage 6: Fit & apply categorical encoding. Log details.
-    """
-    out = Path(output_dir)
-    encoder = Stage5Encoder()
-    train_e = encoder.encode_train(train)
-    val_e = encoder.encode_test(val)
-    test_e = encoder.encode_test(test)
-    for idx, df_e in enumerate((train_e, val_e, test_e), start=14):
-        path = out / f"{idx}_encoded.parquet"
-        df_e.to_parquet(path, index=False)
-    with open(out / "encode_log.json", "w") as f:
-        json.dump(encoder.report, f, indent=2)
-    logger.info("[ENCODE] Completed and logged")
-    return train_e, val_e, test_e
-
-
-def run_all(
-    source: str,
-    mode: str = "file",
-    target_column: Optional[str] = None,
-    test_size: float = 0.1,
-    val_size: float = 0.1,
-    random_state: int = 42,
-    output_dir: str = "outputs"
+@pipeline(enable_cache=True)
+def full_training_pipeline(
+    ingest_data,
+    inspect_data,
+    split_data,
+    impute_data,
+    scale_transform,
+    detect_outliers,
+    feature_split,
+    feature_construct,
+    encode,
+    train_baseline
 ):
-    """
-    Run the entire pipeline from ingestion through encoding.
-    """
-    df0 = ingest(source, mode, output_dir)
-    df1 = inspect(df0, target_column, output_dir)
-    t, v, tst = split(df1, target_column, test_size,
-                      val_size, random_state, output_dir)
-    ti, vi, tsi = impute(t, v, tst, random_state, output_dir)
-    ts, vs, tss = scale_transform(ti, vi, tsi, output_dir)
-    to, vo, tso = detect_outliers(ts, vs, tss, output_dir)
-    splitter = AdvancedFeatureSplitterV4(
-        n_jobs=4, cache_json=True, strip_html=True, flatten_xml=True,
-        # you can pass mixed_patterns=..., url_columns=[...], etc.
-    )
-    train_fs = splitter.transform(to)
-    val_fs = splitter.transform(vo)
-    test_fs = splitter.transform(tso)
-    # Optionally log splitter.report_ to JSON
-    with open(Path(output_dir)/"splitter_report.json", "w") as f:
-    json.dump(splitter.report_, f, indent=2)
-
-    # Stage 7: Advanced feature construction
-    constructor = AdvancedFeatureConstructorV4(
-        n_jobs=4,
-        group_aggs={'user_id': ['mean', 'count']},
-        crosses=[('colA', 'colB')],
-        text_stat_cols=['comment'],
-        rolling_windows={'value': 5},
-        custom_funcs={'range': lambda df: df['max']-df['min']},
-    )
-    train_fc = constructor.transform(train_fs)
-    val_fc = constructor.transform(val_fs)
-    test_fc = constructor.transform(test_fs)
-    # Optionally log constructor.report_ to JSON
-    with open(Path(output_dir)/"constructor_report.json", "w") as f:
-    json.dump(constructor.report_, f, indent=2)
-    return encode(to, vo, tso, output_dir)
+    data = ingest_data()
+    checked = inspect_data(data)
+    train, val, test = split_data(checked)
+    train, val, test = impute_data(train, val, test)
+    train, val, test = scale_transform(train, val, test)
+    train, val, test = detect_outliers(train, val, test)
+    train, val, test = feature_split(train, val, test)
+    train, val, test = feature_construct(train, val, test)
+    train, val, test = encode(train, val, test)
+    train_baseline(train, val)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Industry-standard function-based ML pipeline")
-    parser.add_argument("source", help="File path or SQL connection string")
-    parser.add_argument("--mode", choices=["file", "sql"], default="file")
-    parser.add_argument("--target", help="Target column name", default=None)
-    parser.add_argument("--test_size", type=float, default=0.1)
-    parser.add_argument("--val_size", type=float, default=0.1)
-    parser.add_argument("--random_state", type=int, default=42)
-    parser.add_argument("--output", default="outputs",
-                        help="Directory for outputs")
-    parser.add_argument("--all", action="store_true",
-                        help="Run all stages sequentially")
-    parser.add_argument("--stage", choices=[
-        "ingest", "inspect", "split", "impute",
-        "scale_transform", "detect_outliers", "encode"
-    ], help="Run only the specified stage")
-    args = parser.parse_args()
-
-    if args.all:
-        run_all(
-            source=args.source,
-            mode=args.mode,
-            target_column=args.target,
-            test_size=args.test_size,
-            val_size=args.val_size,
-            random_state=args.random_state,
-            output_dir=args.output
-        )
-    elif args.stage:
-        # Single-stage invocation handled here as needed...
-        parser.print_help()
-    else:
-        parser.print_help()
-# ==================================÷===========================
-"""
-# Advanced Feature Splitter and Constructor Integration
-
-```diff
-@@ imports
--from src.Feature_Engineering.encoding_stage5 import Stage5Encoder
-
-
-
-@@
--def run_all(
-def run_all(
-     source: str,
-     mode: str="file",
-     target_column: Optional[str]=None,
-     test_size: float=0.1,
-     val_size: float=0.1,
-     random_state: int=42,
-     output_dir: str="outputs"
- ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-@ @
-     # Stage 5: Outlier detection
-     to, vo, tso=detect_outliers(ts, vs, tss, output_dir)
-
-    # Stage 6: Advanced feature splitting
-
-
-    # Stage 8: Encoding
- return encode(train_fc, val_fc, test_fc, output_dir)
-```
-
-1. ** Imports**: Bring in `AdvancedFeatureSplitterV4` and `AdvancedFeatureConstructorV4`.
-2. ** Within `run_all`**, after outlier detection but before encoding:
-
-   * Instantiate and apply the splitter to each split DataFrame, logging its `report_`.
-   * Instantiate and apply the constructor to the splitter outputs, logging its `report_`.
-3. ** Rename ** subsequent `encode` stage to occur after construction.
-"""
+    full_training_pipeline(
+        ingest_data=ingest_data(),
+        inspect_data=inspect_data(),
+        split_data=split_data(),
+        impute_data=impute_data(),
+        scale_transform=scale_transform(),
+        detect_outliers=detect_outliers(),
+        feature_split=feature_split(),
+        feature_construct=feature_construct(),
+        encode=encode(),
+        train_baseline=train_baseline()
+    ).run()

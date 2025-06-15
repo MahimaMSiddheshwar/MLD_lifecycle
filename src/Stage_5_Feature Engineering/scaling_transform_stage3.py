@@ -27,37 +27,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 class Stage4Transform(BaseEstimator, TransformerMixin):
-    """
-    Performs scaling and (optionally many) extra transforms.
-
-    Parameters
-    ----------
-    mode : str
-        “simple”   → one global scaler + per‐column {none/boxcox/yeo/quantile};
-        “enhanced” → brute‐force per‐column (closed-form pre-transforms + per-column scaler + extra transforms);
-        “auto”     → picks “enhanced” if (n_rows * n_cols < 1e6), else “simple”.
-    skew_thresh_robust : float
-        Any |skew| > this → prefer RobustScaler globally (simple mode),
-        or allow per-column (enhanced mode). Default: 1.0.
-    kurt_thresh_robust : float
-        Any |kurtosis| > this → prefer RobustScaler globally (simple mode).
-    skew_thresh_standard : float
-        If all |skew| < this → prefer StandardScaler globally (simple mode).
-    alpha_normal_simple : float
-        Shapiro p‐value threshold for “already normal” in simple mode. Default: 0.10.
-    skew_cutoff_simple : float
-        |skew| threshold after scaling for “already normal” in simple mode. Default: 0.50.
-    alpha_normal_enh : float
-        Shapiro p‐value threshold for “already normal” in enhanced mode. Default: 0.10.
-    skew_cutoff_enh : float
-        |skew| threshold after scaling for “already normal” in enhanced mode. Default: 0.50.
-    qt_max_rows : int
-        Maximum rows for QuantileTransformer. Default: 100 000.
-    random_state : int
-        RNG seed. Default: 42.
-    verbose : bool
-        If True, prints some info. Default: False.
-    """
 
     PRE_FUNCS = {
         "none": lambda x: x.copy(),
@@ -551,7 +520,6 @@ class Stage4Transform(BaseEstimator, TransformerMixin):
         return df0
 
     # ────────── FIT & FIT_TRANSFORM ──────────
-
     def fit(self, df: pd.DataFrame, numeric_cols: List[str]) -> "Stage4Transform":
         """
         Fit according to mode (“simple”/“enhanced”/“auto”).
@@ -602,7 +570,6 @@ class Stage4Transform(BaseEstimator, TransformerMixin):
         return self.transform(df)
 
     # ────────── TRANSFORM (new data) ──────────
-
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Apply the fitted pipeline to new data (flag==True → no retraining).
