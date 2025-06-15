@@ -1,27 +1,4 @@
-# Machine Learning Pipeline Reference
-
-> **Purpose:**  
-> This document codifies a reproducible, configurable, end-to-end ML pipeline from raw data ingestion through feature engineering — pulling together best practices from Stanford, MIT, Harvard and our in-house improvements.
->
-> **How to use:**  
-> For each project, walk through the numbered stages below. Each stage lists **Objectives**, **Key Tasks**, **Checks & Metrics**, and **Configurable Parameters**.
-
----
-
-## Table of Contents
-
-1. [Stage 0: Project Setup & Configuration](#stage-0-project-setup--configuration)
-2. [Stage 1: Data Ingestion](#stage-1-data-ingestion)
-3. [Stage 2: Data Validation & Sanity Checks](#stage-2-data-validation--sanity-checks)
-4. [Stage 3: Missingness & Cleaning](#stage-3-missingness--cleaning)
-5. [Stage 4: Outlier Detection & Treatment](#stage-4-outlier-detection--treatment)
-6. [Stage 5: Scaling & Transformation](#stage-5-scaling--transformation)
-7. [Stage 6: Feature Engineering & Selection](#stage-6-feature-engineering--selection)
-8. [Stage 7: Train/Val/Test Split & Baseline](#stage-7-trainvaltest-split--baseline)
-9. [Stage 8: Leakage Detection & Integrity](#stage-8-leakage-detection--integrity)
-10. [Next Steps](#next-steps)
-
----
+# Data Preprocessing Pipeline Improvement Proposal
 
 ## Stage 0: Project Setup & Configuration
 
@@ -311,70 +288,6 @@
 
 - Catch both target-leakage and train/test separation leakage.
 
-### Key Tasks
-
-1. **Target-Leakage**
-
-   - For each feature: compute AUC( feature → target ) > auc_thresh (e.g. 0.99)
-   - Categorical: one-hot & take max AUC.
-
-2. **Train/Test Separation**
-
-   - Concat train/test, label 0/1, compute AUC( feature → is_train ).
-
-3. **Row Overlap**
-
-   - Merge on all features – if any exact duplicate, warn.
-
-4. **Unseen Categories**
-
-   - For each cat col: test_vals – train_vals → report.
-
-### Checks & Metrics
-
-- List of leaky features.
-- Separation AUC per feature.
-- Overlap row count.
-
----
-
-## Next Steps & MLOps
-
-1. **Model Selection & Tuning**
-
-   - Wrap with [`sklearn.pipeline.Pipeline`](https://scikit-learn.org/stable/modules/pipeline.html), grid/RandomSearchCV.
-
-2. **Experiment Tracking**
-
-   - Log metrics/params to MLflow or Weights & Biases.
-
-3. **Model Validation**
-
-   - Cross-validation, calibration curves, partial dependence.
-
-4. **Deployment**
-
-   - Package as API (FastAPI), containerize (Docker), auto-retrain triggers.
-
-5. **Monitoring**
-
-   - Periodic data-drift & prediction-drift checks, alerting on threshold breaches.
-
----
-
-> **References & Further Reading**
->
-> - CRISP-DM (SPC Whitepaper)
-> - TDSP (Microsoft’s Team Data Science Process)
-> - “Feature Lab” at Stanford CS229
-> - MIT 6.86x “Machine Learning on Big Data” lecture notes
-> - Harvard Data Science Common Workflow
-
-_(This README is meant as a living document – feel free to iterate over it as your team’s needs evolve.)_
-
-Here’s a **single, self-contained** `improvements.md` capturing every review point and extending them with additional suggestions. Feel free to drop it into your repo (e.g. at `docs/improvements.md`) and iterate from there.
-
-````markdown
 # Pipeline Code Review & Improvement Roadmap
 
 > **Scope:** Six modules (Stages 1–6) plus cross-cutting concerns  
@@ -628,7 +541,8 @@ Here’s a **single, self-contained** `improvements.md` capturing every review p
 ---
 
 > _Implementing the **top 10 urgent fixes** (boxed in each section) will resolve the most critical correctness issues; the remaining 40+ “nice-to-haves” will round out robustness, reproducibility, and performance at scale._
-````
+
+`````
 
 **Next Steps:**
 
@@ -654,10 +568,10 @@ Feel free to tweak thresholds or expand any section with your own notes.
 ````markdown
 # Machine Learning Pipeline Reference
 
-> **Purpose:**  
+> **Purpose:**
 > This document codifies a reproducible, configurable, end-to-end ML pipeline from raw data ingestion through feature engineering — pulling together best practices from Stanford, MIT, Harvard and our in-house improvements.
 >
-> **How to use:**  
+> **How to use:**
 > For each project, walk through the numbered stages below. Each stage lists **Objectives**, **Key Tasks**, **Checks & Metrics**, and **Configurable Parameters**.
 
 ---
@@ -701,7 +615,7 @@ Feel free to tweak thresholds or expand any section with your own notes.
     shapiro_p_thresh: 0.05
   random_seed: 42
   ```
-````
+`````
 
 - Record experiment metadata: git commit, timestamp, config hash.
 
@@ -959,69 +873,270 @@ Feel free to tweak thresholds or expand any section with your own notes.
 
 ---
 
-## Stage 8: Leakage Detection & Integrity
+Perfect — let's go **deeper into the bugs and issues found in these initial files**, now with more technical clarity and cross-referenced impacts across the pipeline. Below is a **comprehensive review and fix list** for:
 
-### Objectives
-
-- Catch both target-leakage and train/test separation leakage.
-
-### Key Tasks
-
-1. **Target-Leakage**
-
-   - For each feature: compute AUC( feature → target ) > auc_thresh (e.g. 0.99)
-   - Categorical: one-hot & take max AUC.
-
-2. **Train/Test Separation**
-
-   - Concat train/test, label 0/1, compute AUC( feature → is_train ).
-
-3. **Row Overlap**
-
-   - Merge on all features – if any exact duplicate, warn.
-
-4. **Unseen Categories**
-
-   - For each cat col: test_vals – train_vals → report.
-
-### Checks & Metrics
-
-- List of leaky features.
-- Separation AUC per feature.
-- Overlap row count.
+- `training_pipeline.py`
+- `ml_pipeline_final.py`
+- `data_injection.py`
+- `data_inspection.py`
 
 ---
 
-## Next Steps & MLOps
+## 🔧 `training_pipeline.py` — Core Bugs
 
-1. **Model Selection & Tuning**
+### ❌ **1. `target` Column Hardcoded**
 
-   - Wrap with [`sklearn.pipeline.Pipeline`](https://scikit-learn.org/stable/modules/pipeline.html), grid/RandomSearchCV.
+```python
+model.fit(train.drop(columns="target"), train["target"])
+```
 
-2. **Experiment Tracking**
+- ❗ Problem: Many real-world datasets may have different target names (`"label"`, `"y"`). This should be dynamic.
 
-   - Log metrics/params to MLflow or Weights & Biases.
+✅ **Fix**:
 
-3. **Model Validation**
-
-   - Cross-validation, calibration curves, partial dependence.
-
-4. **Deployment**
-
-   - Package as API (FastAPI), containerize (Docker), auto-retrain triggers.
-
-5. **Monitoring**
-
-   - Periodic data-drift & prediction-drift checks, alerting on threshold breaches.
+```python
+TARGET_COL = os.getenv("TARGET_COL", "target")
+X = train.drop(columns=[TARGET_COL])
+y = train[TARGET_COL]
+```
 
 ---
 
-> **References & Further Reading**
->
-> - CRISP-DM (SPC Whitepaper)
-> - TDSP (Microsoft’s Team Data Science Process)
-> - “Feature Lab” at Stanford CS229
-> - MIT 6.86x “Machine Learning on Big Data” lecture notes
-> - Harvard Data Science Common Workflow
+### ❌ **2. Artifact Storage Not Used Elsewhere**
 
-_(This README is meant as a living document – feel free to iterate over it as your team’s needs evolve.)_
+- ❗ Problem: Imputer, scaler, encoder artifacts are saved (to MLflow), but:
+
+  - Not reused during testing
+  - Not reloaded for inference
+
+✅ **Fix**:
+
+- Add explicit MLflow artifact loading in `test_prediction_pipeline`
+- Or better, use ZenML `Model` abstraction with `save_model()` + `load_model()`.
+
+---
+
+### ❌ **3. Missing Caching Control for Costly Steps**
+
+- ❗ Some steps (e.g., `encode`, `impute`) are expensive.
+- No custom hash / input checksum control. This can cause re-runs unnecessarily.
+
+✅ **Fix**:
+
+```python
+@step(enable_cache=True, cache_config={"materializer": CustomHasher})
+```
+
+---
+
+### ❌ **4. No Custom Artifact Versioning**
+
+- ❗ MLflow artifacts are dumped using same filenames (`imputer_report.json`, etc.)
+- This causes overwriting and trace loss.
+
+✅ **Fix**:
+Use dynamic file naming:
+
+```python
+timestamp = datetime.now().strftime("%Y%m%d%H%M")
+filename = f"imputer_report_{timestamp}.json"
+```
+
+---
+
+### ❌ **5. MLflow Log Directory Hardcoded**
+
+- ❗ `mlflow.log_artifact("imputer_report.json")` assumes CWD
+- Fails when ZenML stack runs remotely (e.g., Kubernetes, SageMaker)
+
+✅ **Fix**:
+
+```python
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "report.json"
+    json.dump(report, open(path, "w"))
+    mlflow.log_artifact(str(path))
+```
+
+---
+
+## 🔧 `ml_pipeline_final.py`
+
+### ❌ **1. Duplicated Logic from `training_pipeline.py`**
+
+- ❗ Not modular; violates DRY.
+- Two files doing the same full pipeline logic.
+
+✅ **Fix**:
+
+- Merge into `training_pipeline.py` and use CLI arg like:
+
+```bash
+python training_pipeline.py --mode=prod
+```
+
+---
+
+## 🔧 `data_injection.py`
+
+### ❌ **1. `DataCollector.read_file()` Uses Hardcoded `"data.csv"`**
+
+- ❗ Not flexible. Blocks reusability.
+
+✅ **Fix**:
+
+- Allow file path as ZenML pipeline config input or env var.
+
+```python
+file_path: str = os.getenv("DATA_PATH", "data/raw/input.csv")
+df = DataCollector().read_file(file_path)
+```
+
+---
+
+### ❌ **2. No Logging or Profiling of Data**
+
+✅ **Fix**:
+
+- After reading:
+
+```python
+logger.info(f"Loaded {df.shape[0]} rows and {df.shape[1]} columns")
+logger.info(f"Missing values: {df.isnull().sum().sum()}")
+```
+
+---
+
+### ❌ **3. PII Masking Inference Isn’t Validated**
+
+- ❗ `pii_mask=True` applies blindly. What if the columns are already masked?
+
+✅ **Fix**:
+
+- Add check:
+
+```python
+if any("masked" not in col for col in pii_columns):  # re-mask only if needed
+```
+
+---
+
+## 🔧 `data_inspection.py`
+
+### ❌ **1. No Outputs Persisted**
+
+✅ **Fix**:
+Save `checker.report_` (if it exists) as:
+
+```python
+with open("artifacts/inspection_report.json", "w") as f:
+    json.dump(checker.report_, f)
+mlflow.log_artifact("artifacts/inspection_report.json")
+```
+
+---
+
+### ❌ **2. Missing Schema Checks**
+
+✅ **Fix**:
+
+- Integrate `great_expectations` or `pydantic` model in this step.
+- Validate schema BEFORE health checks.
+
+---
+
+### ❌ **3. Return Value Is Same As Input**
+
+```python
+return data
+```
+
+- ❗ Doesn’t output any “checked” result — should return cleaned/marked data
+
+✅ **Fix**:
+
+- Tag rows with anomalies
+- Or add `.status` column if any row-level inspection is needed
+
+---
+
+## ✅ Summary: Critical Bug Fixes (Table)
+
+| Location            | Issue                            | Severity | Fix Summary                          |
+| ------------------- | -------------------------------- | -------- | ------------------------------------ |
+| `training_pipeline` | Hardcoded target                 | High     | Parametrize target column            |
+| `training_pipeline` | No reuse of artifacts            | High     | Load transformers in test pipeline   |
+| `training_pipeline` | Artifact name collisions         | Medium   | Use timestamps or UUIDs in filenames |
+| `data_injection`    | Static file path                 | High     | Configurable via ZenML inputs        |
+| `data_injection`    | No data log or schema validation | Medium   | Use logging + Great Expectations     |
+| `data_inspection`   | Report not persisted             | Medium   | Save & log inspection output         |
+| `ml_pipeline_final` | Duplicate logic                  | Medium   | Merge pipelines or modularize        |
+
+---
+
+Would you like me to now proceed to the **Preprocessing, Feature Engineering, and SmartTransformers** section next?
+
+Great. I’ve unzipped the project and listed the files. I’ll now review the code across the relevant modules, especially in the `src/` and `pipeline/` folders, to identify 10 more potential **bugs**, **misconfigurations**, or **architectural issues** that could impact your pipeline. Please hold on while I begin this deep inspection.
+
+I've identified 16 key Python files across your pipeline and source directories. I'll now scan them for **code issues, integration mismatches, logical bugs, and architecture inconsistencies**. This review will focus on the following:
+
+- MLflow or ZenML misuse or missing connections
+- Pipeline stage misorders
+- Feature handling inconsistencies
+- Missing logging or artifact tracking
+- Redundant computations
+- Syntax and logic issues
+
+Starting with this review now.
+
+Thanks for your patience. Here's the first round of **deep inspection results** based on the files you've provided. These are **10 new issues or critical gaps** I found beyond the earlier batch:
+
+---
+
+### ✅ Critical Issues & Bugs Found
+
+1. **🚫 Missing Argument Parsers Not Used Properly (`Mathematical_EDA.py`)**
+
+   - `argparse` is imported and defined but the parsed arguments are **never used**. This leads to hardcoded configurations rather than user-defined flexibility.
+
+2. **🌀 EDA Scripts Not Modular (`Full_EDA.py`)**
+
+   - This file mixes **plotting, modeling, and report generation** in procedural style. No functions or classes → can't reuse in pipelines easily.
+   - Example: `sns`, `matplotlib`, and `statsmodels` plots saved without checking directories or handling exceptions.
+
+3. **💥 Unsafe File Paths**
+
+   - Paths like `Path("data/interim/clean.parquet")` used directly across files. If directory doesn't exist, it **crashes without a fallback** or proper logging.
+
+4. **🧩 Missing ZenML/MLflow Integration in EDA**
+
+   - No tracking of EDA results, plots, JSON summaries using MLflow.
+   - Reports (e.g., VIF, PCA, entropy) aren't persisted for downstream reproducibility.
+
+5. **🔁 Redundant Imports in Multiple Scripts**
+
+   - Re-importing the same packages (e.g., `datetime`, `statsmodels`, `sklearn`) across many files, some of which are unused in logic. This bloats runtime memory and readability.
+
+6. **🧪 Lack of Unit Testing or Assertions**
+
+   - No assertions or test checkpoints in logic-heavy files like `ProbabilisticAnalysis.py` or `Mathematical_EDA.py`. If shape or data type changes, silent failure is likely.
+
+7. **🚷 No Pipeline Exit on Drift or Invalid Data**
+
+   - Even though entropy collapse or drift is logged in `ProbabilisticAnalysis`, it's not linked with pipeline control (e.g., `sys.exit(1)` or error raising). **This may let invalid data continue** through.
+
+8. **🔕 Logging Without Context**
+
+   - Multiple files (e.g., `deepcheck_validation`) use `logging.info`/`print`, but lack context tags like `[DRIFT CHECK]`, making logs hard to debug in CI/CD or multi-pipeline runs.
+
+9. **🧼 Unused Functions/Variables Detected**
+
+   - In several analysis scripts, e.g., `copula_modeling()` result is used but not returned or stored for reuse.
+
+10. **🗃️ Drift Class Lacks Integration Hooks**
+
+    - `DriftMonitor` class is robust but isn't wrapped as a ZenML `@step`. Hence, **won’t show up on dashboard** or artifact store unless manually logged.
+
+---
+
+Would you like me to continue auditing more files (e.g. training/test pipelines, utils)? Or should I start **fixing these issues directly**, refactoring files to align with ZenML flow?

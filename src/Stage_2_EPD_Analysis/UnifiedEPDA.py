@@ -25,10 +25,10 @@ from copulas.multivariate import GaussianMultivariate
 from joblib import Parallel, delayed
 
 # optional libraries
-try:
-    from ydata_profiling import ProfileReport
-except ImportError:
-    ProfileReport = None
+# try:
+#     from ydata_profiling import ProfileReport
+# except ImportError:
+#     ProfileReport = None
 
 try:
     import dabl
@@ -190,10 +190,10 @@ class ExploratoryDataAnalysis:
                     df[target_col], dates.fillna(0), average='macro')
                 self.report['leakage_auc'] = float(auc)
 
-        # HTML profiling
-        if profile and ProfileReport:
-            ProfileReport(df, explorative=True).to_file("profile.html")
-            self.report['profile_html'] = "profile.html"
+        # # HTML profiling
+        # if profile and ProfileReport:
+        #     ProfileReport(df, explorative=True).to_file("profile.html")
+        #     self.report['profile_html'] = "profile.html"
 
         return df
 
@@ -312,10 +312,10 @@ class AdvancedEDA:
             self.report['tsne_embedding'] = ed
 
         # 7. HTML profiling
-        if ProfileReport:
-            ProfileReport(df, title="Advanced EDA",
-                          explorative=True).to_file(od/"profile.html")
-            self.report['profile_html'] = str(od/"profile.html")
+        # if ProfileReport:
+        #     ProfileReport(df, title="Advanced EDA",
+        #                   explorative=True).to_file(od/"profile.html")
+        #     self.report['profile_html'] = str(od/"profile.html")
 
         # 8. dabl quick plot
         if dabl:
@@ -503,9 +503,9 @@ class ProbabilisticAnalysis:
         plt.close()
 
 
-class UnifiedPDA:
+class UnifiedEPDA:
     """
-    Unified Probabilistic Data Analysis:
+    Unified Exploratory Probabilistic Data Analysis:
     Combines basic EDA, advanced EDA, and probabilistic analysis into one report.
     """
 

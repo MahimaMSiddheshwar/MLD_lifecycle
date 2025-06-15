@@ -5,7 +5,7 @@ from itertools import combinations
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 
-class DataFrameHealthCheck:
+class DataHealthCheck:
     """
     Run a battery of pre-training EDA checks on a DataFrame and produce an HTML report.
     """

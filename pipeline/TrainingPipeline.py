@@ -9,15 +9,32 @@ import os
 from sklearn.dummy import DummyClassifier
 from sklearn.metrics import accuracy_score
 
-from smart_feature_transformer import SmartFeatureTransformer
-from src.Data_Ingest_diagnose.data_injection_stage1 import DataCollector
-from src.Data_Ingest_diagnose.data_inspection import DataFrameHealthCheck
-from src.Data_Preprocessing.improved_stage2 import Stage2Imputer
-from src.Data_Preprocessing.OutlierDetection_stage4 import OutlierDetector
-from src.Feature_Engineering.encoding_stage5 import Stage5Encoder
-from src.advanced_splitting import AdvancedFeatureSplitterV4
-from src.advanced_construction import AdvancedFeatureConstructorV4
-from utils.monitor import monitor
+
+from src.Stage_1_Ingestion.data_injection import DataCollector
+from src.Stage_1_Ingestion.DataHealthCheck import DataHealthCheck
+
+from src.Stage_2_ED_Analysis.UnifiedEPDA import UnifiedEPDA
+from src.Stage_2_ED_Analysis.EDAnalyzer import EDAnalyzer
+from src.Stage_2_ED_Analysis.PDAnalysis import ProbabilisticAnalysis
+
+from src.Stage_3_Split_data.ThreeWaySplit import SplitThreeWay
+from src.Stage_3_Split_data.base import SplitThreeWay
+
+
+from src.stage_4_preprocessing.Missing_Imputer import MissingImputer
+from src.stage_4_preprocessing.Outlier_Detection import OutlierDetector
+
+from src.Stage_5_Feature_Engineering.Feature_Encoding import FeatureEncoder
+from src.Stage_5_Feature_Engineering.Feature_Splitting import FeatureSplitter
+from src.Stage_5_Feature_Engineering.Feature_Construction import FeatureConstructor
+from src.Stage_5_Feature_Engineering.Feature_Transformer import FeatureTransformer
+from src.Stage_5_Feature_Engineering.Dimensionality_Reduction import AutoDR
+
+
+# from src.stage_6_modeling import ModelTrainer
+from src.Stage_7_Evaluation.Evaluate_register import evaluate_and_register
+
+from src.utils.monitor import monitor
 
 mlflow.set_tag("zenml_pipeline", "training_pipeline_v1")
 
@@ -57,7 +74,7 @@ def split_data(data: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFram
 @step
 @monitor(name="impute_data", log_args=True, track_input_size=True, track_memory=True, retries=1)
 def impute_data(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
-    imputer = Stage2Imputer()
+    imputer = MissingImputer()
     imputer.fit(train)
 
     # Save imputer report to MLflow
@@ -116,7 +133,7 @@ def feature_construct(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame
 @step
 @monitor(name="encode", log_args=True, log_result=True, track_input_size=True, track_memory=True)
 def encode(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output(train=pd.DataFrame, val=pd.DataFrame, test=pd.DataFrame):
-    encoder = Stage5Encoder()
+    encoder = FeatureEncoder()
     train_e = encoder.encode_train(train)
     val_e = encoder.encode_test(val)
     test_e = encoder.encode_test(test)
@@ -140,9 +157,11 @@ def encode(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> Output
 @monitor(name="baseline_model")
 def train_baseline(train: pd.DataFrame, val: pd.DataFrame) -> Output(score=float):
     model = DummyClassifier(strategy="most_frequent")
-    model.fit(train.drop(columns="target"), train["target"])
-    preds = model.predict(val.drop(columns="target"))
-    acc = accuracy_score(val["target"], preds)
+    TARGET_COL = os.getenv("TARGET_COL", "target")
+
+    model.fit(train.drop(columns=TARGET_COL), train[TARGET_COL])
+    preds = model.predict(val.drop(columns=TARGET_COL))
+    acc = accuracy_score(val[TARGET_COL], preds)
 
     mlflow.log_metric("baseline_accuracy", acc)
     mlflow.sklearn.log_model(model, artifact_path="baseline_model")
@@ -175,7 +194,7 @@ def full_training_pipeline(
     train_baseline(train, val)
 
 
-if __name__ == "__main__":
+def TrainingPipeline():
     full_training_pipeline(
         ingest_data=ingest_data(),
         inspect_data=inspect_data(),

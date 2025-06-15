@@ -83,8 +83,7 @@ def optuna_hpo_with_ensemble_pipeline(
 
 
 # Main
-if __name__ == "__main__":
-
+def OptunaHPO():
     optuna_hpo_with_ensemble_pipeline(
         load_production_data=load_production_data(),
         tune_step=tune_step(),

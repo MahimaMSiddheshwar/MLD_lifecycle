@@ -100,15 +100,7 @@ def test_pipeline(load_test_data, load_reference_encoded, load_transform_artifac
     apply_and_predict(test, ref, imputer, transformer, encoder, model)
 
 
-if __name__ == "__main__":
-    from test_pipeline import (
-        test_pipeline,
-        load_test_data,
-        load_reference_encoded,
-        load_transform_artifacts,
-        apply_and_predict,
-    )
-
+def PredictionPipeline():
     test_pipeline(
         load_test_data=load_test_data(),
         load_reference_encoded=load_reference_encoded(),

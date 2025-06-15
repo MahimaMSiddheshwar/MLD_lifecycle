@@ -12,7 +12,6 @@ Stage 5: Categorical Encoding Variants
 """
 
 import pandas as pd
-import numpy as np
 import logging
 from pathlib import Path
 from typing import List, Dict
@@ -24,7 +23,7 @@ REPORT_PATH = Path("reports/encoding")
 REPORT_PATH.mkdir(parents=True, exist_ok=True)
 
 
-class Stage5Encoder:
+class FeatureEncoder:
     """
     Parameters
     ----------

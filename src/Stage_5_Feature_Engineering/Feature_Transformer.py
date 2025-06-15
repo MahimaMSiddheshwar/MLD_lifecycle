@@ -15,10 +15,8 @@ from src.utils.scripts.monitor import monitor
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# TODO: Add
 
-
-class SmartFeatureTransformer(BaseEstimator, TransformerMixin):
+class FeatureTransformer(BaseEstimator, TransformerMixin):
     """
     Intelligent feature transformer with 'adaptive', 'simple', or 'enhanced' modes.
     Applies optimal scaler + transformation per column or globally using statistical tests.

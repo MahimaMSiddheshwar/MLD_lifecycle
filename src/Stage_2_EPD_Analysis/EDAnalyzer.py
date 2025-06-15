@@ -41,7 +41,7 @@ from sklearn.manifold import TSNE
 from sklearn.metrics import mutual_info_classif, mutual_info_regression
 
 import pingouin as pg
-from pandas_profiling import ProfileReport
+# from pandas_profiling import ProfileReport
 
 
 def hopkins_statistic(X, m=None, random_state=0):
@@ -67,7 +67,7 @@ def hopkins_statistic(X, m=None, random_state=0):
     return float(du.sum() / (du.sum() + dx.sum()))
 
 
-class EDAAnalyzerV3:
+class EDAnalyzer:
     def __init__(
         self,
         df: pd.DataFrame,
@@ -332,8 +332,8 @@ class EDAAnalyzerV3:
         plt.close()
 
         # HTML profile
-        ProfileReport(self.df, minimal=True).to_file(
-            self.outdir / "profile.html")
+        # ProfileReport(self.df, minimal=True).to_file(
+        #     self.outdir / "profile.html")
 
     def _write_manifest(self):
         man = {
@@ -352,6 +352,8 @@ class EDAAnalyzerV3:
         self._write_manifest()
         print(f"✅ EDA_v3 complete. Outputs in {self.outdir}/")
 
+
+"""
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(
@@ -396,7 +398,6 @@ if __name__ == "__main__":
     ).run()
 
 
-"""
 # ──────────────────────────────────────────────────────────────
 # Example Usage ---------------------
 # ──────────────────────────────────────────────────────────────

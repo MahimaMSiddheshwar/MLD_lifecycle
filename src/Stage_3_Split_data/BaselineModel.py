@@ -206,11 +206,6 @@ from auto_baseline import AutoBaseline
 baseline = AutoBaseline(target="price", verbose=True)
 regression_results = baseline.run(train_df, test_df)
 
-# regression_results will be a dict like:
-# {
-#   "mean_regressor": { "type":"mean_regressor", "mae":..., "mse":..., "r2":... },
-#   "median_regressor": { "type":"median_regressor", "mae":..., "mse":..., "r2":... }
-# }
 baseline = AutoBaseline(target="is_churn", verbose=True)
 classification_results = baseline.run(train_df, test_df)
 """

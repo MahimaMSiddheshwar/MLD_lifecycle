@@ -145,7 +145,7 @@ class MissingnessAnalyzer:
         return results
 
 
-class Stage2Imputer:
+class MissingImputer:
     """
     Stage 2: Missing‐Value Imputation
 

@@ -399,6 +399,7 @@ class ProbabilisticAnalysis:
         #   pa.diagnostic_plots(col)
 
 
+"""
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True,
@@ -440,3 +441,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+"""

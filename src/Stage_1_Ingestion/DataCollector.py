@@ -377,6 +377,7 @@ class DataCollector:
         return self._postprocess(df, "mqtt")
 
 
+"""
 if __name__ == "__main__":
     # === Quick Self-Test ===
     # Create a tiny CSV, read it, and ensure output is reasonable
@@ -396,3 +397,4 @@ if __name__ == "__main__":
     print("\nLoaded DataFrame:")
     print(df_loaded.head())
     print("\nSemantic Profiling Report JSON → see 'reports/profiling' directory.")
+"""
