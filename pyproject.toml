@@ -31,6 +31,9 @@ mypy = "^1.16.0"
 statsmodels = "^0.14.4"
 pingouin = "^0.5.5"
 scikit-learn = "^1.7.0"
+optuna = "^4.3.0"
+catboost = "^1.2.8"
+imbalanced-learn = "^0.12"
 
 [tool.poetry.scripts]
 train = "pipeline/TrainingPipeline.py:TrainingPipeline"

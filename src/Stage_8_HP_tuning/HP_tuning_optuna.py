@@ -17,7 +17,7 @@ from sklearn.ensemble import (
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier

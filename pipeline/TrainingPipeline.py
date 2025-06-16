@@ -10,7 +10,7 @@ from sklearn.dummy import DummyClassifier
 from sklearn.metrics import accuracy_score
 
 
-from src.Stage_1_Ingestion.data_injection import DataCollector
+from src.Stage_1_Ingestion.data_injection.DataCollector import DataCollector
 from src.Stage_1_Ingestion.DataHealthCheck import DataHealthCheck
 
 from src.Stage_2_ED_Analysis.UnifiedEPDA import UnifiedEPDA
