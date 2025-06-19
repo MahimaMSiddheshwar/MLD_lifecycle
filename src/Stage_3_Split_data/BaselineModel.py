@@ -18,8 +18,7 @@ Usage:
     # `results` is a dict mapping each baseline name to its metric dict.
     # When verbose=True, metrics are printed as they’re computed.
 """
-
-import numpy as np
+from pathlib import Path
 import pandas as pd
 from typing import Dict, Any
 from sklearn.dummy import DummyClassifier, DummyRegressor
@@ -48,28 +47,14 @@ class AutoBaseline:
     After fitting each baseline, it computes standard metrics and returns a dict.
     """
 
-    def __init__(self, target: str, verbose: bool = False):
-        """
-        Parameters
-        ----------
-        target : str
-            Name of the target column.
-        verbose : bool
-            If True, prints each baseline’s metrics as it’s computed.
-        """
+    def __init__(self, target: str, verbose: bool = True):
         self.target = target
         self.verbose = verbose
         self.results: Dict[str, Dict[str, Any]] = {}
+        self.REPORT_DIR = Path("reports/baseline")
+        self.REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     def run(self, train_df: pd.DataFrame, test_df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-        """
-        Fit all applicable baselines on train_df, evaluate on test_df, and return metrics.
-
-        Returns
-        -------
-        Dict[str, Dict[str, Any]]
-            A mapping from baseline_name → {metric_name: metric_value, …}.
-        """
         y_train = train_df[self.target]
         y_test = test_df[self.target]
 
@@ -81,6 +66,9 @@ class AutoBaseline:
         else:
             self._run_classification_baselines(
                 train_df, test_df, y_train, y_test)
+
+        # TODO: Add Report to HTML file named baseline model stats
+        # self.REPORT_DIR
 
         return self.results
 

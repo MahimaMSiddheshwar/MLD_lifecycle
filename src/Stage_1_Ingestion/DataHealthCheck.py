@@ -3,15 +3,22 @@ import numpy as np
 import scipy.stats as ss
 from itertools import combinations
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+from functools import partial
+from zenml.integrations.deepchecks.steps import (
+    deepchecks_data_drift_check_step,
+    deepchecks_data_integrity_check_step,
+)
+from zenml.integrations.deepchecks.validation_checks import (
+    DeepchecksDataDriftCheck,
+)
+
+# TODO: ADD Constant from .yaml file from config.basic.DATASET_TARGET_COLUMN_NAME
+DATASET_TARGET_COLUMN_NAME = ""
 
 
 class DataHealthCheck:
-    """
-    Run a battery of pre-training EDA checks on a DataFrame and produce an HTML report.
-    """
-
     def __init__(self, df: pd.DataFrame,
-                 target_col: str = None,
+                 target_col: str = None,  # Get Target Column
                  batch_col: str = None,
                  datetime_cols: list = None):
         self.df = df.copy()
@@ -63,7 +70,7 @@ class DataHealthCheck:
         for col in num.columns[:50]:  # limit to first 50 for speed
             q1, q3 = np.nanpercentile(num[col], [25, 75])
             iqr = q3 - q1
-            low, high = q1 - 1.5*iqr, q3 + 1.5*iqr
+            low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
             out[col] = int(((num[col] < low) | (num[col] > high)).sum())
         # top 10 outlier counts
         self.results['outliers'] = dict(
@@ -110,19 +117,6 @@ class DataHealthCheck:
         if self.batch_col and self.batch_col in self.df:
             vc = self.df[self.batch_col].value_counts(normalize=True).to_dict()
             self.results['batch_distribution'] = vc
-
-    def run_all_checks(self):
-        self.detect_dimensionality()
-        self.detect_missingness()
-        self.detect_dtypes()
-        self.detect_skew_scale()
-        self.detect_categorical_cardinality()
-        self.detect_outliers()
-        self.detect_collinearity()
-        self.detect_vif()
-        self.detect_imbalance()
-        self.detect_date_issues()
-        self.detect_batch_summary()
 
     def generate_report(self) -> str:
         self.run_all_checks()
@@ -218,3 +212,45 @@ class DataHealthCheck:
 
         html.append("</body></html>")
         return "\n".join(html)
+
+    # Deepchecks data integrity check step
+    def data_integrity_checker():
+        return partial(
+            deepchecks_data_integrity_check_step,
+            id="data_integrity_checker",
+            dataset_kwargs=dict(
+                label=DATASET_TARGET_COLUMN_NAME,
+                cat_features=[],
+            ),
+        )
+
+    # Deepchecks train-test data similarity check step
+    def data_drift_detector():
+        return partial(
+            deepchecks_data_drift_check_step,
+            id="data_drift_detector",
+            dataset_kwargs=dict(
+                label=DATASET_TARGET_COLUMN_NAME, cat_features=[]),
+            check_kwargs={
+                DeepchecksDataDriftCheck.TABULAR_FEATURE_LABEL_CORRELATION_CHANGE: dict(
+                    condition_feature_pps_in_train_less_than=dict(
+                        threshold=1.0,
+                    ),
+                )
+            },
+        )
+
+
+def run_all_checks(self):
+    self.detect_dimensionality()
+    self.detect_missingness()
+    self.detect_dtypes()
+    self.detect_skew_scale()
+    self.detect_categorical_cardinality()
+    self.detect_outliers()
+    self.detect_collinearity()
+    self.detect_vif()
+    self.detect_imbalance()
+    self.detect_date_issues()
+    self.detect_batch_summary()
+    self.generate_report()

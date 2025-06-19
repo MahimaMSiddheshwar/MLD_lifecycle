@@ -321,7 +321,7 @@ class DataCollector:
             df = pd.read_csv(buffer, sep="\t")
         elif ftype == "parquet":
             df = pd.read_parquet(buffer)
-        elif ftype == "excel" | ftype == "xlsx" | ftype == "xls":  # excel
+        elif ftype == "excel":  # excel
             df = pd.read_excel(buffer)
         else:
             raise ValueError(f"Unsupported file type: {ftype}")

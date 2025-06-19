@@ -1,28 +1,13 @@
 #!/usr/bin/env python3
-"""
-split_and_baseline.py
-
-Phase 5½: Split the (already‐processed) Parquet, optionally SMOTE, train multiple baseline models,
-pick the best, freeze the winning baseline (and store checksums), run sanity checks, and freeze the preprocessor.
-"""
-
 from __future__ import annotations
 import json
+import pandas as pd
 from pathlib import Path
 from datetime import datetime
-from deepchecks.tabular import TrainTestValidation
-
-import numpy as np
-import pandas as pd
+from deepchecks.tabular import Dataset
+from deepchecks.tabular.suites import TrainTestValidation
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import SMOTE
-import joblib
-
-# For baseline models
-from sklearn.dummy import DummyRegressor, DummyClassifier
-from sklearn.metrics import mean_absolute_error, r2_score, accuracy_score, f1_score
 
 log = None  # you can configure Python logging if desired
 
@@ -34,30 +19,23 @@ class SplitThreeWay:
         seed: int = 42,
         stratify: bool = True,
         oversample: bool = False,
+        data: pd.dataframe = None
     ):
         self.target = target
         self.seed = seed
         self.stratify = stratify
         self.oversample = oversample
-
+        self.df = data
         # ─── Paths ─────────────────────────────────────────────────────────────
-        self.PROC = Path("data/processed/scaled.parquet")
-        self.SPLIT_DIR = Path("data/splits")
+        self.PROC = Path("Data/raw/data.parquet")
+        self.SPLIT_DIR = Path("Data/splits")
         self.SPLIT_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.REPORT_DIR = Path("reports/baseline")
-        self.REPORT_DIR.mkdir(parents=True, exist_ok=True)
-
-        self.MODEL_DIR = Path("models")
-        self.MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-        self.BASELINE_DIR = self.MODEL_DIR / "baselines"
-        self.BASELINE_DIR.mkdir(parents=True, exist_ok=True)
-
         # ─── Load processed data ─────────────────────────────────────────────────
-        if not self.PROC.exists():
+        if not self.PROC.exists() and self.df == None:
             raise FileNotFoundError(f"Expected processed data at {self.PROC}")
-        self.df = pd.read_parquet(self.PROC)
+        else:
+            self.df = pd.read_parquet(self.PROC)
 
     def split_data(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
@@ -66,8 +44,6 @@ class SplitThreeWay:
         3) Persist train/val/test in Parquet and write a JSON manifest.
         4) Run Deepchecks TrainTestValidation suite.
         """
-        from deepchecks.tabular import Dataset
-        from deepchecks.tabular.suites import TrainTestValidation
 
         y = self.df[self.target]
         stratify_key = y if self.stratify else None
