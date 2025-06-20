@@ -27,6 +27,14 @@ from sklearn.feature_selection import mutual_info_classif, mutual_info_regressio
 from sklearn.preprocessing import QuantileTransformer
 from copulas.multivariate import GaussianMultivariate
 from joblib import Parallel, delayed
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.inspection import permutation_importance
+
+from scipy.spatial.distance import jensenshannon
+from sklearn.metrics import mutual_info_score
+from itertools import combinations
+from scipy.stats import entropy as kl_entropy
+
 
 REPORT_DIR = None  # set in main()
 
@@ -42,8 +50,16 @@ class ProbabilisticAnalysis:
         entropy_bins: int = 20,
         jobs: int = 1,
     ):
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("`df` must be a pandas DataFrame")
+
+        if target and target not in df.columns:
+            print(
+                f"⚠️ Warning: Target '{target}' not found in dataframe. Ignoring.")
+            target = None
+
         self.df = df.copy().reset_index(drop=True)
-        self.target = target if target in df.columns else None
+        self.target = target
         self.mode = mode.lower()
         self.quantile_output = quantile_output
         self.min_dist_count = min_dist_count
@@ -63,22 +79,48 @@ class ProbabilisticAnalysis:
     @staticmethod
     def _fit_one_distribution(col: str, values: np.ndarray):
         """Helper for parallel distribution fitting on a single column."""
-        candidate_distros = ["norm", "lognorm", "gamma", "beta", "weibull_min"]
+
+        candidate_distros = [
+            "norm",        # Normal (Gaussian) — symmetric bell curve
+            "lognorm",     # Log-Normal — positive-skewed data, e.g., income
+            "gamma",       # Gamma — positive-only, skewed data rainfall, time
+            "beta",        # Beta — bounded between 0 and 1, e.g., proportions, probabilities
+            "weibull_min",  # Weibull — versatile, survival/failure analysis
+            "expon",       # Exponential — memoryless events, time between Poisson events
+            "pareto",      # Pareto — long tail distributions wealth, file sizes
+            "t",           # Student's t — ~ normal, but  heavier tails - small samples
+            "cauchy",      # Cauchy — very heavy-tailed, no mean/variance, use with caution
+            "rayleigh",    # Rayleigh — positive values, magnitude of 2D vectors signal noise
+            "triang"       # Triangular — known min/mode/max shape, simple bounded distribution
+        ]
+
         best = None  # (dist_name, params, aic, ks_stat, ks_p)
         for name in candidate_distros:
             dist = getattr(stats, name)
             try:
+                if name in {"lognorm", "gamma", "expon", "pareto", "rayleigh"}:
+                    if np.any(values <= 0):
+                        continue  # requires strictly positive
+                elif name in {"beta", "triang"}:
+                    if np.any(values < 0) or np.any(values > 1):
+                        continue  # must be bounded [0, 1]
                 params = dist.fit(values)
                 ll = np.sum(dist.logpdf(values, *params))
                 k = len(params)
                 aic = 2 * k - 2 * ll
                 ks_stat, ks_p = stats.kstest(values, name, args=params)
                 candidate = (name, params, aic, ks_stat, ks_p)
-                if best is None or candidate[2] < best[2]:
+
+                if best is None or candidate[2] < best[2]:  # minimize AIC
                     best = candidate
             except Exception:
                 continue
-        return col, best
+            # Add Anderson-Darling test for normality as extra info
+        try:
+            ad_stat = stats.anderson(values, dist="norm").statistic
+        except Exception:
+            ad_stat = None
+        return col, best, ad_stat
 
     def fit_all_distributions(self) -> dict[str, tuple]:
         """
@@ -110,17 +152,18 @@ class ProbabilisticAnalysis:
 
         # collect best fits
         dist_out = {}
-        for col, best in results:
+        for col, best, ad_stat in results:
             if best is None:
                 continue
             name, params, aic, ks, pval = best
             self.distributions[col] = best
             dist_out[col] = {
                 "best_dist": name,
-                "params": [float(x) for x in params],
+                "params": [float(x) if x is not None else None for x in params],
                 "aic": float(aic),
                 "ks_stat": float(ks),
                 "ks_p": float(pval),
+                "anderson_darling": float(ad_stat) if ad_stat is not None else None
             }
 
         # save JSON
@@ -152,6 +195,68 @@ class ProbabilisticAnalysis:
         )
         print(f"→ Shannon entropy saved to {REPORT_DIR/'shannon_entropy.csv'}")
         return ent
+
+    def cramers_v_matrix(self) -> pd.DataFrame:
+        """Pairwise Cramér's V for all object columns (categorical ↔ categorical)."""
+        obj_cols = self.df.select_dtypes(include='object').columns
+        result = pd.DataFrame(index=obj_cols, columns=obj_cols, dtype=float)
+
+        for col1, col2 in combinations(obj_cols, 2):
+            confusion_matrix = pd.crosstab(self.df[col1], self.df[col2])
+            chi2 = stats.chi2_contingency(confusion_matrix)[0]
+            n = confusion_matrix.sum().sum()
+            r, k = confusion_matrix.shape
+            phi2 = chi2 / n
+            v = np.sqrt(phi2 / min(k - 1, r - 1))
+            result.loc[col1, col2] = result.loc[col2, col1] = v
+
+        np.fill_diagonal(result.values, 1.0)
+        out_path = REPORT_DIR / "cramers_v_matrix.csv"
+        result.to_csv(out_path)
+        print(f"→ Cramér’s V matrix saved to {out_path}")
+        return result
+
+    def theils_u_matrix(self) -> pd.DataFrame:
+        """Theil's U matrix (asymmetrical) for all categorical pairs."""
+        def theils_u(x, y):
+            s_xy = mutual_info_score(x, y)
+            hx = stats.entropy(np.bincount(pd.factorize(x)[0]))
+            return s_xy / hx if hx != 0 else 1.0
+
+        obj_cols = self.df.select_dtypes(include='object').columns
+        result = pd.DataFrame(index=obj_cols, columns=obj_cols, dtype=float)
+
+        for col1 in obj_cols:
+            for col2 in obj_cols:
+                if col1 == col2:
+                    result.loc[col1, col2] = 1.0
+                else:
+                    result.loc[col1, col2] = theils_u(
+                        self.df[col1], self.df[col2])
+
+        result.to_csv(REPORT_DIR / "theils_u_matrix.csv")
+        print(
+            f"→ Theil’s U matrix saved to {REPORT_DIR/'theils_u_matrix.csv'}")
+        return result
+
+    def rank_correlations(self) -> pd.DataFrame:
+        """Kendall's Tau and Spearman correlations for numeric pairs."""
+        num_cols = self.df.select_dtypes(include=np.number).columns
+        tau_df = pd.DataFrame(index=num_cols, columns=num_cols, dtype=float)
+        spear_df = pd.DataFrame(index=num_cols, columns=num_cols, dtype=float)
+
+        for c1, c2 in combinations(num_cols, 2):
+            tau, _ = stats.kendalltau(self.df[c1], self.df[c2])
+            spear, _ = stats.spearmanr(self.df[c1], self.df[c2])
+            tau_df.loc[c1, c2] = tau_df.loc[c2, c1] = tau
+            spear_df.loc[c1, c2] = spear_df.loc[c2, c1] = spear
+
+        np.fill_diagonal(tau_df.values, 1.0)
+        np.fill_diagonal(spear_df.values, 1.0)
+        tau_df.to_csv(REPORT_DIR / "kendall_tau.csv")
+        spear_df.to_csv(REPORT_DIR / "spearman_corr.csv")
+        print("→ Kendall’s Tau and Spearman correlation matrices saved.")
+        return tau_df, spear_df
 
     def mutual_info_scores(self) -> pd.Series | None:
         """
@@ -200,7 +305,7 @@ class ProbabilisticAnalysis:
         self.cond_tables = tables
         return tables
 
-    def pit_transform(self) -> pd.DataFrame:
+    def fit_transform(self) -> pd.DataFrame:
         """
         Probability Integral Transform for each numeric column via ECDF.
         """
@@ -380,16 +485,215 @@ class ProbabilisticAnalysis:
         plt.close()
         print(f"→ Saved diagnostic plot for '{feature}' to {out_path}")
 
+    def jensen_shannon_divergence(p, q):
+        """Compute JSD between two distributions (safe wrapper)."""
+        p, q = np.asarray(p), np.asarray(q)
+        p, q = p + 1e-9, q + 1e-9
+        m = 0.5 * (p + q)
+        return 0.5 * (kl_entropy(p, m) + kl_entropy(q, m))
+
+    def population_stability_index(expected, actual, bins=10):
+        """Compute PSI for drift detection between expected and actual."""
+        expected_perc, _ = np.histogram(expected, bins=bins, density=True)
+        actual_perc, _ = np.histogram(actual, bins=bins, density=True)
+        expected_perc = expected_perc + 1e-9
+        actual_perc = actual_perc + 1e-9
+        return np.sum((expected_perc - actual_perc) * np.log(expected_perc / actual_perc))
+
+    def drift_and_divergence_tests(self) -> pd.DataFrame:
+        num_cols = self.df.select_dtypes(include=np.number).columns.tolist()
+        results = []
+
+        # For now, use first 10% vs rest as base vs current
+        split_idx = int(0.1 * len(self.df))
+        base = self.df.iloc[:split_idx]
+        current = self.df.iloc[split_idx:]
+
+        for col in num_cols:
+            base_vals = base[col].dropna().values
+            curr_vals = current[col].dropna().values
+            if len(base_vals) < 5 or len(curr_vals) < 5:
+                continue
+            try:
+                jsd = jensen_shannon_divergence(
+                    np.histogram(base_vals, bins=20, density=True)[0],
+                    np.histogram(curr_vals, bins=20, density=True)[0],
+                )
+                psi = population_stability_index(base_vals, curr_vals, bins=20)
+                kl = kl_entropy(
+                    np.histogram(base_vals, bins=20, density=True)[0] + 1e-9,
+                    np.histogram(curr_vals, bins=20, density=True)[0] + 1e-9,
+                )
+                results.append({
+                    "feature": col,
+                    "JSD": jsd,
+                    "PSI": psi,
+                    "KL_divergence": kl
+                })
+            except Exception:
+                continue
+
+        df_out = pd.DataFrame(results)
+        df_out.to_csv(REPORT_DIR / "divergence_tests.csv", index=False)
+        print(
+            f"→ Drift & divergence tests saved to {REPORT_DIR/'divergence_tests.csv'}")
+        return df_out
+
+    def bootstrap_column_ci(self, n_iter=1000, ci_level=95) -> pd.DataFrame:
+        """
+        For each numeric column, compute bootstrap CI for mean & median.
+        """
+        num_cols = self.df.select_dtypes(include=np.number).columns
+        results = []
+
+        for col in num_cols:
+            vals = self.df[col].dropna().values
+            if len(vals) < 10:
+                continue
+            means, medians = [], []
+            for _ in range(n_iter):
+                sample = np.random.choice(vals, size=len(vals), replace=True)
+                means.append(np.mean(sample))
+                medians.append(np.median(sample))
+            ci_mean = np.percentile(
+                means, [(100 - ci_level) / 2, 100 - (100 - ci_level) / 2])
+            ci_median = np.percentile(
+                medians, [(100 - ci_level) / 2, 100 - (100 - ci_level) / 2])
+            results.append({
+                "feature": col,
+                "mean_lower": ci_mean[0], "mean_upper": ci_mean[1],
+                "median_lower": ci_median[0], "median_upper": ci_median[1]
+            })
+
+        df_out = pd.DataFrame(results)
+        df_out.to_csv(REPORT_DIR / "bootstrap_cis.csv", index=False)
+        print("→ Bootstrap confidence intervals saved.")
+        return df_out
+
+    def univariate_moments(self) -> pd.DataFrame:
+        """Compute skewness and kurtosis for all numeric columns."""
+        stats_df = self.df.select_dtypes(include=np.number).apply(
+            lambda x: pd.Series({
+                "skewness": stats.skew(x.dropna()),
+                "kurtosis": stats.kurtosis(x.dropna(), fisher=True)
+            })
+        )
+        stats_df.to_csv(REPORT_DIR / "skew_kurtosis.csv")
+        print("→ Skewness & kurtosis saved to skew_kurtosis.csv")
+        return stats_df
+
+    def generate_final_report(self) -> dict:
+        """
+        Creates a complete in-memory summary report of all statistical diagnostics.
+        Saves both JSON and CSV versions into REPORT_DIR.
+
+        Uses:
+        - self.entropy
+        - self.distributions
+        - self.pit_df
+        - self.copula_model
+        - self.group_stats
+        - self.mi_scores
+        - self.perm_importance_
+        - self.skew_kurt_cache (assigned internally)
+        - self.drift_results_cache (assigned internally)
+
+        Returns:
+            flags: dict of feature → list of tags
+        """
+        if not hasattr(self, "skew_kurt_cache"):
+            self.skew_kurt_cache = self.df.select_dtypes(include=np.number).apply(
+                lambda x: pd.Series({
+                    "skewness": stats.skew(x.dropna()),
+                    "kurtosis": stats.kurtosis(x.dropna(), fisher=True)
+                })
+            )
+
+        if not hasattr(self, "drift_results_cache"):
+            self.drift_results_cache = pd.DataFrame(self.drift_and_divergence_tests()) if callable(
+                getattr(self, 'drift_and_divergence_tests', None)) else pd.DataFrame()
+
+        flags = {}
+        csv_rows = []
+
+        numeric_cols = self.df.select_dtypes(include=np.number).columns
+        entropy = self.entropy or self.shannon_entropy()
+        pit_cols = self.pit_df.columns if self.pit_df is not None else []
+
+        for col in self.df.columns:
+            f = []
+
+            # Skew & Kurtosis
+            if col in self.skew_kurt_cache.index:
+                skew = self.skew_kurt_cache.loc[col, "skewness"]
+                kurt = self.skew_kurt_cache.loc[col, "kurtosis"]
+                if abs(skew) > 2:
+                    f.append("extreme_skew")
+                elif abs(skew) > 1:
+                    f.append("moderate_skew")
+                if abs(kurt) > 5:
+                    f.append("extreme_kurtosis")
+                elif abs(kurt) > 3:
+                    f.append("moderate_kurtosis")
+
+            # Entropy
+            if col in entropy:
+                if entropy[col] < 0.2:
+                    f.append("very_low_entropy")
+                elif entropy[col] < 1.0:
+                    f.append("low_entropy")
+
+            # Missing distribution fit
+            if col in numeric_cols and col not in self.distributions:
+                f.append("no_best_fit_found")
+
+            # PIT coverage
+            if col in numeric_cols and (col not in pit_cols or self.pit_df[col].isnull().mean() > 0.8):
+                f.append("missing_pit")
+
+            # Drift
+            if col in self.drift_results_cache["feature"].values:
+                drift_row = self.drift_results_cache[self.drift_results_cache["feature"] == col].iloc[0]
+                if drift_row["PSI"] > 0.3 or drift_row["JSD"] > 0.2:
+                    f.append("high_drift")
+                elif drift_row["PSI"] > 0.1 or drift_row["JSD"] > 0.1:
+                    f.append("moderate_drift")
+
+            # Copula modeling
+            if col in numeric_cols and self.copula_model is None:
+                f.append("missing_copula")
+
+            flags[col] = f
+            csv_rows.append({"feature": col, "flags": ", ".join(f)})
+
+        # Save to disk
+        json_path = REPORT_DIR / "final_summary.json"
+        csv_path = REPORT_DIR / "final_summary.csv"
+        json_path.write_text(json.dumps(flags, indent=2))
+        pd.DataFrame(csv_rows).to_csv(csv_path, index=False)
+
+        print(
+            f"✅ Final report written to {json_path.name} and {csv_path.name}")
+        return flags
+
     def run_all(self):
-        """Run all analyses in sequence."""
         self.fit_all_distributions()
         self.shannon_entropy()
         self.mutual_info_scores()
         self.conditional_probability_tables()
-        self.pit_transform()
+        self.fit_transform()
         self.quantile_transform()
         self.bayesian_group_comparison()
         self.copula_modeling()
+        self.cramers_v_matrix()
+        self.theils_u_matrix()
+        self.rank_correlations()
+        self.bootstrap_column_ci()
+        self.univariate_moments()
+        self.drift_results_cache = self.drift_and_divergence_tests()
+        self.skew_kurt_cache = self.univariate_moments()
+        self.generate_final_report()
+
         # # 11. Permutation feature importance (if target provided)
         # pa.feature_importance()
 
