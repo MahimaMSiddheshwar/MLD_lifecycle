@@ -5,7 +5,7 @@ env:
 
 install:
 	poetry install
-	zenml integration install s3 sklearn mlflow deepchecks -y
+	zenml integration install s3 sklearn mlflow -y
 
 train:
 	poetry run train

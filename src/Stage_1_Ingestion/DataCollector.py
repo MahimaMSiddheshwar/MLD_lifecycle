@@ -89,6 +89,18 @@ def _semantic_type_profile(df: pd.DataFrame, source: str) -> pd.DataFrame:
         vals = set(series.dropna().astype(str).str.lower())
         return vals.issubset({"true", "false", "0", "1", "yes", "no"})
 
+    def is_numeric(series: pd.Series) -> bool:
+        """
+        Check if a column is numeric or can be reliably coerced to numeric (ignoring nulls).
+        """
+        if pd.api.types.is_numeric_dtype(series):
+            return True
+        try:
+            coerced = pd.to_numeric(series.dropna(), errors='coerce')
+            return coerced.notna().mean() > 0.9
+        except:
+            return False
+
     def is_datetime(series: pd.Series) -> bool:
         try:
             parsed = pd.to_datetime(
@@ -152,11 +164,17 @@ def _semantic_type_profile(df: pd.DataFrame, source: str) -> pd.DataFrame:
         series = df[col]
         orig_dtype = str(series.dtype)
         converted = False
+        semantic = "Unknown"
+
+        # Pre-clean copy of column
+        col_clean = series.copy()
 
         if is_constant(series):
             semantic = "Constant / Redundant"
+
         elif is_id_like(series):
             semantic = "ID-like Field"
+
         elif is_boolean(series):
             semantic = "Boolean"
             df_clean[col] = (
@@ -166,66 +184,75 @@ def _semantic_type_profile(df: pd.DataFrame, source: str) -> pd.DataFrame:
                 )
             )
             converted = True
+
+        # --- Handle Numeric BEFORE datetime to avoid false conversions ---
+        elif is_numeric(series) or series.dropna().map(lambda x: isinstance(x, (int, float)) or str(x).replace(".", "", 1).isdigit()).mean() > 0.9:
+            num_series = pd.to_numeric(series, errors="coerce")
+
+            if num_series.dropna().map(float.is_integer).mean() > 0.9:
+                semantic = "Integer"
+                df_clean[col] = num_series.astype("Int64")  # nullable integer
+            else:
+                semantic = "Float"
+                df_clean[col] = num_series.astype("float")
+            converted = True
+
         elif is_datetime(series):
             semantic = "Datetime"
             df_clean[col] = pd.to_datetime(series, errors="coerce")
             converted = True
+
         elif is_time_only(series):
             semantic = "Time Only"
+
         elif is_duration(series):
             semantic = "Duration / Timedelta"
             df_clean[col] = pd.to_timedelta(series, errors="coerce")
             converted = True
+
         elif is_zip(series):
             semantic = "ZIP Code"
+
         elif is_currency(series):
             semantic = "Currency"
             df_clean[col] = series.replace(
                 r"[^\d.]", "", regex=True).astype(float)
             converted = True
+
         elif is_email(series):
             semantic = "Email"
+
         elif is_url(series):
             semantic = "URL"
+
         elif is_json_like(series):
             semantic = "JSON / Dict-like"
+
         elif is_geo(series):
             semantic = "Geolocation"
+
         elif is_categorical(series):
             semantic = "Categorical"
             df_clean[col] = series.astype("category")
             converted = True
+
         elif is_high_card_cat(series):
             semantic = "High Cardinality Categorical"
-        else:
-            # Numeric detection (int/float stored as str)
-            tmp = series.dropna().map(lambda x: isinstance(x, (int, float))
-                                      or str(x).replace(".", "", 1).isdigit())
-            if tmp.mean() > 0.9:
-                # all values numeric‐like
-                if series.dropna().map(lambda x: str(x).isdigit()).mean() > 0.9:
-                    semantic = "Integer"
-                    df_clean[col] = pd.to_numeric(
-                        series, errors="coerce", downcast="integer")
-                    converted = True
-                else:
-                    semantic = "Float"
-                    df_clean[col] = pd.to_numeric(series, errors="coerce")
-                    converted = True
-            else:
-                # Very long strings?
-                textmask = series.dropna().map(lambda x: isinstance(x, str) and (len(x) > 50))
-                if textmask.mean() > 0.9:
-                    semantic = "Text Paragraph"
-                else:
-                    semantic = "String / Text"
 
-        report[col] = {
-            "original_dtype": orig_dtype,
-            "semantic_type": semantic,
-            "converted": converted,
-            "final_dtype": str(df_clean[col].dtype),
-        }
+        else:
+            # Last fallback
+            textmask = series.dropna().map(lambda x: isinstance(x, str) and len(x) > 50)
+            if textmask.mean() > 0.9:
+                semantic = "Text Paragraph"
+            else:
+                semantic = "String / Text"
+
+    report[col] = {
+        "original_dtype": orig_dtype,
+        "semantic_type": semantic,
+        "converted": converted,
+        "final_dtype": str(df_clean[col].dtype) if converted else orig_dtype,
+    }
 
     # Write JSON report
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")

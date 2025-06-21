@@ -4,3 +4,5 @@ Data/
 _Data/
 .zen/
 .DS_Store
+__pycache__
+reports

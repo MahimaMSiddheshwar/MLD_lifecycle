@@ -1,4 +1,3 @@
-from deepchecks.tabular import Dataset
 from src.data_analysis.advanced_drift_monitor import DriftMonitor
 from src.data_analysis.Probabilistic.probabilistic_analysis import ProbabilisticAnalysis
 from pathlib import Path
@@ -12,8 +11,6 @@ import mlflow
 
 from evidently.report import Report
 from evidently.metric_preset import DataDriftPreset, TargetDriftPreset
-from deepchecks.tabular import Dataset, TrainTestValidation
-from deepchecks.tabular.suites import full_suite
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,27 +50,6 @@ def target_drift_check(train: pd.DataFrame, live: pd.DataFrame) -> Output(target
     mlflow.log_metric("evidently_target_drift", drift_score)
 
     return drift_score
-
-
-@step
-def deepcheck_validation(train: pd.DataFrame, test: pd.DataFrame) -> Output(validation_passed=bool):
-    label = "target"
-    train_ds = Dataset(train, label=label, cat_features=train.select_dtypes(
-        include="object").columns.tolist())
-    test_ds = Dataset(test, label=label, cat_features=test.select_dtypes(
-        include="object").columns.tolist())
-
-    suite = full_suite()
-    result = suite.run(train_ds, test_ds)
-
-    passed = result.passed()
-    result.save_as_html("artifacts/monitoring/deepchecks_validation.html")
-
-    mlflow.log_artifact("artifacts/monitoring/deepchecks_validation.html")
-    mlflow.log_param("deepcheck_passed", passed)
-
-    logger.info(f"[Deepchecks] Passed: {passed}")
-    return passed
 
 
 @step
@@ -171,7 +147,6 @@ def drift_monitoring_pipeline(
     split_data,
     data_drift_step,
     target_drift_step,
-    deepchecks_step,
     probabilistic_monitor_step,
     advanced_drift_step
 ):
@@ -181,6 +156,5 @@ def drift_monitoring_pipeline(
 
     data_drift_step(train, test)
     target_drift_step(train, test)
-    deepchecks_step(train, test)
     probabilistic_monitor_step(test)
     advanced_drift_step(train, test)

@@ -6,7 +6,6 @@ set -Eeo pipefail
 export GOOGLE_APPLICATION_CREDENTIALS=~/.ssh/google-demos.json
 gcloud auth configure-docker --project zenml-demos 
 
-zenml data-validator register deepchecks_data_validator --flavor=deepchecks
 zenml experiment-tracker register gcp_mlflow_tracker  --flavor=mlflow --tracking_insecure_tls=true --tracking_uri="http://35.246.148.181/mlflow/" --tracking_username="{{mlflow_secret.tracking_username}}" --tracking_password="{{mlflow_secret.tracking_password}}" 
 zenml orchestrator register vertex_ai_orchestrator \
   --flavor=vertex \
@@ -24,7 +23,6 @@ zenml stack register gcp_gitflow_stack \
     -a gcp_store \
     -c gcp_registry \
     -o vertex_ai_orchestrator \
-    -dv deepchecks_data_validator \
     -e gcp_mlflow_tracker \
     -i local_image_builder || \
   msg "${WARNING}Reusing preexisting stack ${NOFORMAT}gcp_gitflow_stack"

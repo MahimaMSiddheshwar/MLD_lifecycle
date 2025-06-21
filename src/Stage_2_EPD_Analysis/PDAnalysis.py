@@ -34,6 +34,8 @@ from scipy.spatial.distance import jensenshannon
 from sklearn.metrics import mutual_info_score
 from itertools import combinations
 from scipy.stats import entropy as kl_entropy
+from scipy.stats import anderson
+from statsmodels.distributions.empirical_distribution import ECDF
 
 
 REPORT_DIR = None  # set in main()
@@ -65,7 +67,8 @@ class ProbabilisticAnalysis:
         self.min_dist_count = min_dist_count
         self.entropy_bins = entropy_bins
         self.jobs = jobs
-
+        self.copula_loglik = None
+        self.model_score = None
         self.distributions: dict[str, tuple] = {}
         self.entropy: dict[str, float] = {}
         self.mi_scores: pd.Series | None = None
@@ -76,8 +79,27 @@ class ProbabilisticAnalysis:
         self.copula_model = None
         self.perm_importance_: pd.Series | None = None
 
+    def detect_nonlinearity(x, y):
+        # Remove NaNs
+        mask = ~np.isnan(x) & ~np.isnan(y)
+        if np.sum(mask) < 30:
+            return False  # too small for reliable test
+        x, y = x[mask], y[mask]
+
+        # Pearson ~ linear, Spearman ~ monotonic (non-linear)
+        try:
+            pearson_corr, _ = pearsonr(x, y)
+            spearman_corr, _ = spearmanr(x, y)
+            # Large delta means likely non-linear
+            if abs(spearman_corr - pearson_corr) > 0.2:
+                return True
+        except Exception:
+            return True  # fallback to mutual_info if correlation fails
+
+        return False
+
     @staticmethod
-    def _fit_one_distribution(col: str, values: np.ndarray):
+    def _fit_one_distribution(self, col: str, values: np.ndarray):
         """Helper for parallel distribution fitting on a single column."""
 
         candidate_distros = [
@@ -117,9 +139,15 @@ class ProbabilisticAnalysis:
                 continue
             # Add Anderson-Darling test for normality as extra info
         try:
-            ad_stat = stats.anderson(values, dist="norm").statistic
+            fitted_cdf = dist.cdf
+            ad_stat = self._generic_ad_stat(
+                values, lambda x: fitted_cdf(x, *params))
         except Exception:
             ad_stat = None
+
+        if best is None:
+            print(f"⚠️ No valid distribution fit found for column '{col}'")
+
         return col, best, ad_stat
 
     def fit_all_distributions(self) -> dict[str, tuple]:
@@ -146,7 +174,7 @@ class ProbabilisticAnalysis:
 
         # parallel execution
         results = Parallel(n_jobs=self.jobs)(
-            delayed(self._fit_one_distribution)(col, vals)
+            delayed(self._fit_one_distribution)(self, col, vals)
             for col, vals in tasks
         )
 
@@ -172,6 +200,17 @@ class ProbabilisticAnalysis:
         print(f"→ Best-fit distributions written to {path}")
         return self.distributions
 
+    @staticmethod
+    def _generic_ad_stat(sample, cdf_fn):
+        """Calculate Anderson–Darling statistic for any CDF function."""
+        sample = np.sort(sample)
+        n = len(sample)
+        i = np.arange(1, n + 1)
+        cdf_vals = np.clip(cdf_fn(sample), 1e-9, 1 - 1e-9)
+        s = -n - np.sum((2 * i - 1) * (np.log(cdf_vals)
+                        + np.log(1 - cdf_vals[::-1])) / n)
+        return s
+
     def shannon_entropy(self) -> dict[str, float]:
         """
         Compute Shannon entropy per column.
@@ -184,10 +223,12 @@ class ProbabilisticAnalysis:
                 continue
             if vals.dtype == object or vals.nunique() < self.entropy_bins:
                 probs = vals.value_counts(normalize=True).values
+                # Avoid log(0) by adding a small epsilon
                 ent[col] = float(-np.sum(probs * np.log(probs + 1e-9)))
             else:
                 hist, _ = np.histogram(
                     vals.values, bins=self.entropy_bins, density=True)
+                # Avoid log(0) by adding a small epsilon
                 ent[col] = float(stats.entropy(hist + 1e-9))
         self.entropy = ent
         pd.Series(ent, name="shannon_entropy").to_csv(
@@ -203,11 +244,18 @@ class ProbabilisticAnalysis:
 
         for col1, col2 in combinations(obj_cols, 2):
             confusion_matrix = pd.crosstab(self.df[col1], self.df[col2])
-            chi2 = stats.chi2_contingency(confusion_matrix)[0]
-            n = confusion_matrix.sum().sum()
-            r, k = confusion_matrix.shape
-            phi2 = chi2 / n
-            v = np.sqrt(phi2 / min(k - 1, r - 1))
+            if confusion_matrix.shape[0] < 2 or confusion_matrix.shape[1] < 2:
+                continue  # skip invalid crosstab
+
+            try:
+                chi2 = stats.chi2_contingency(confusion_matrix)[0]
+                n = confusion_matrix.sum().sum()
+                phi2 = chi2 / n
+                r, k = confusion_matrix.shape
+                v = np.sqrt(phi2 / min(k - 1, r - 1))
+            except ZeroDivisionError:
+                v = 0.0
+
             result.loc[col1, col2] = result.loc[col2, col1] = v
 
         np.fill_diagonal(result.values, 1.0)
@@ -220,7 +268,8 @@ class ProbabilisticAnalysis:
         """Theil's U matrix (asymmetrical) for all categorical pairs."""
         def theils_u(x, y):
             s_xy = mutual_info_score(x, y)
-            hx = stats.entropy(np.bincount(pd.factorize(x)[0]))
+            x_enc = pd.factorize(x.dropna())[0]
+            hx = stats.entropy(np.bincount(x_enc))
             return s_xy / hx if hx != 0 else 1.0
 
         obj_cols = self.df.select_dtypes(include='object').columns
@@ -246,8 +295,14 @@ class ProbabilisticAnalysis:
         spear_df = pd.DataFrame(index=num_cols, columns=num_cols, dtype=float)
 
         for c1, c2 in combinations(num_cols, 2):
-            tau, _ = stats.kendalltau(self.df[c1], self.df[c2])
-            spear, _ = stats.spearmanr(self.df[c1], self.df[c2])
+            try:
+                x = self.df[c1].dropna()
+                y = self.df[c2].dropna()
+                idx = x.index.intersection(y.index)
+                tau, _ = stats.kendalltau(x.loc[idx], y.loc[idx])
+                spear, _ = stats.spearmanr(x.loc[idx], y.loc[idx])
+            except Exception:
+                tau, spear = np.nan, np.nan
             tau_df.loc[c1, c2] = tau_df.loc[c2, c1] = tau
             spear_df.loc[c1, c2] = spear_df.loc[c2, c1] = spear
 
@@ -260,7 +315,8 @@ class ProbabilisticAnalysis:
 
     def mutual_info_scores(self) -> pd.Series | None:
         """
-        Compute MI (classification) or F-score regression between features and target.
+        Compute adaptive dependency scores between features and target.
+        Uses f_classif for linear, mutual_info for non-linear relationships.
         """
         if not self.target:
             print("→ No target: skipping mutual_info_scores()")
@@ -273,16 +329,64 @@ class ProbabilisticAnalysis:
             print("→ No features: skipping mutual_info_scores()")
             return None
 
-        if y.nunique() <= 10:
-            mi = mutual_info_classif(X, y, random_state=0)
-        else:
-            f_vals, _ = f_classif(X, y)
-            mi = np.nan_to_num(f_vals, nan=0.0)
+        method_list = []
+        scores = []
 
-        mi_series = pd.Series(mi, index=X.columns).sort_values(ascending=False)
-        mi_series.to_csv(REPORT_DIR / "mutual_info_scores.csv", header=["mi"])
+        for col in X.columns:
+            x_vals = X[col].values
+            y_vals = y.values
+
+            # Basic NA filtering
+            mask = ~np.isnan(x_vals) & ~pd.isnull(y_vals)
+            if np.sum(mask) < 30:
+                scores.append(0.0)
+                method_list.append("insufficient")
+                continue
+
+            x_masked = x_vals[mask].astype(float)
+            y_masked = y_vals[mask].astype(float)
+
+            try:
+                pearson_corr = stats.pearsonr(x_masked, y_masked)[0]
+                spearman_corr = stats.spearmanr(x_masked, y_masked)[0]
+            except Exception:
+                pearson_corr = 0
+                spearman_corr = 0
+
+            # Detect non-linearity
+            nonlinear = abs(spearman_corr - pearson_corr) > 0.2
+
+            try:
+                if y.nunique() <= 10:  # Classification
+                    if nonlinear:
+                        score = mutual_info_classif(
+                            X[[col]], y, random_state=0)[0]
+                        method = "mutual_info"
+                    else:
+                        score = f_classif(X[[col]], y)[0][0]
+                        method = "f_classif"
+                else:  # Regression
+                    if nonlinear:
+                        score = mutual_info_regression(
+                            X[[col]], y, random_state=0)[0]
+                        method = "mutual_info"
+                    else:
+                        score = f_classif(X[[col]], y)[0][0]
+                        method = "f_classif"
+            except Exception:
+                score = 0.0
+                method = "failed"
+
+            scores.append(score)
+            method_list.append(method)
+
+        mi_series = pd.Series(scores, index=X.columns)
+        df_out = mi_series.rename("score").to_frame()
+        df_out["method"] = method_list
+        df_out = df_out.sort_values("score", ascending=False)
+        df_out.to_csv(REPORT_DIR / "target_dependency_scores.csv")
         print(
-            f"→ Mutual info scores saved to {REPORT_DIR/'mutual_info_scores.csv'}")
+            f"→ Target dependency scores saved to {REPORT_DIR/'target_dependency_scores.csv'}")
         self.mi_scores = mi_series
         return mi_series
 
@@ -297,8 +401,9 @@ class ProbabilisticAnalysis:
         tables = {}
         for col in self.df.select_dtypes(include="object").columns:
             ct = pd.crosstab(
-                self.df[col], self.df[self.target], normalize="index"
-            )
+                self.df[col], self.df[self.target], normalize="index")
+            count = self.df[col].value_counts()
+            ct["__count"] = count
             tables[col] = ct
             ct.to_csv(REPORT_DIR / f"cpt_{col}.csv")
         print(f"→ CPTs saved to {REPORT_DIR}")
@@ -332,6 +437,8 @@ class ProbabilisticAnalysis:
         if nums.empty:
             print("→ No numeric cols: skipping quantile_transform()")
             return pd.DataFrame()
+        if self.df[nums].shape[0] < 100:
+            return pd.DataFrame()  # Warning suppressed, but logic flaw noted
 
         qt = QuantileTransformer(
             output_distribution=self.quantile_output, random_state=0)
@@ -365,6 +472,8 @@ class ProbabilisticAnalysis:
                     "mean": mu,
                     "ci_lower": float(ci[0]),
                     "ci_upper": float(ci[1]),
+                    "std_dev": float(arr.std()),
+                    "n": len(arr)
                 })
         gs = pd.DataFrame(stats_list)
         gs.to_csv(REPORT_DIR / "bayesian_group_stats.csv", index=False)
@@ -387,6 +496,8 @@ class ProbabilisticAnalysis:
         path = REPORT_DIR / "copula_params.json"
         path.write_text(json.dumps(model.to_dict(), indent=2))
         print(f"→ Copula params saved to {path}")
+        ll = model.log_likelihood(numeric_df)
+        self.copula_loglik = ll  # Store for report use
         self.copula_model = model
         return model
 
@@ -447,6 +558,8 @@ class ProbabilisticAnalysis:
             model = RandomForestRegressor(n_estimators=100, random_state=0)
 
         model.fit(X, y)
+        self.model_score = model.score(X, y)
+
         perm = permutation_importance(
             model, X, y, n_repeats=10, random_state=0)
         imp_series = pd.Series(perm.importances_mean,
@@ -485,14 +598,14 @@ class ProbabilisticAnalysis:
         plt.close()
         print(f"→ Saved diagnostic plot for '{feature}' to {out_path}")
 
-    def jensen_shannon_divergence(p, q):
+    def jensen_shannon_divergence(self, p, q):
         """Compute JSD between two distributions (safe wrapper)."""
         p, q = np.asarray(p), np.asarray(q)
         p, q = p + 1e-9, q + 1e-9
         m = 0.5 * (p + q)
         return 0.5 * (kl_entropy(p, m) + kl_entropy(q, m))
 
-    def population_stability_index(expected, actual, bins=10):
+    def population_stability_index(self, expected, actual, bins=10):
         """Compute PSI for drift detection between expected and actual."""
         expected_perc, _ = np.histogram(expected, bins=bins, density=True)
         actual_perc, _ = np.histogram(actual, bins=bins, density=True)
@@ -515,11 +628,14 @@ class ProbabilisticAnalysis:
             if len(base_vals) < 5 or len(curr_vals) < 5:
                 continue
             try:
-                jsd = jensen_shannon_divergence(
-                    np.histogram(base_vals, bins=20, density=True)[0],
-                    np.histogram(curr_vals, bins=20, density=True)[0],
-                )
-                psi = population_stability_index(base_vals, curr_vals, bins=20)
+                jsd = self.jensen_shannon_divergence(self,
+                                                     np.histogram(
+                                                         base_vals, bins=20, density=True)[0],
+                                                     np.histogram(
+                                                         curr_vals, bins=20, density=True)[0],
+                                                     )
+                psi = self.population_stability_index(
+                    self, base_vals, curr_vals, bins=20)
                 kl = kl_entropy(
                     np.histogram(base_vals, bins=20, density=True)[0] + 1e-9,
                     np.histogram(curr_vals, bins=20, density=True)[0] + 1e-9,
@@ -542,27 +658,32 @@ class ProbabilisticAnalysis:
     def bootstrap_column_ci(self, n_iter=1000, ci_level=95) -> pd.DataFrame:
         """
         For each numeric column, compute bootstrap CI for mean & median.
+        More efficient: avoids repeated percentiles inside loop.
         """
         num_cols = self.df.select_dtypes(include=np.number).columns
         results = []
+        alpha = (100 - ci_level) / 2
 
         for col in num_cols:
             vals = self.df[col].dropna().values
-            if len(vals) < 10:
-                continue
-            means, medians = [], []
-            for _ in range(n_iter):
-                sample = np.random.choice(vals, size=len(vals), replace=True)
-                means.append(np.mean(sample))
-                medians.append(np.median(sample))
-            ci_mean = np.percentile(
-                means, [(100 - ci_level) / 2, 100 - (100 - ci_level) / 2])
-            ci_median = np.percentile(
-                medians, [(100 - ci_level) / 2, 100 - (100 - ci_level) / 2])
+            if len(vals) < 30:
+                continue  # Avoid unstable CI estimates
+
+            # Bootstrap samples
+            samples = np.random.choice(
+                vals, size=(n_iter, len(vals)), replace=True)
+            means = np.mean(samples, axis=1)
+            medians = np.median(samples, axis=1)
+
+            ci_mean = np.percentile(means, [alpha, 100 - alpha])
+            ci_median = np.percentile(medians, [alpha, 100 - alpha])
+
             results.append({
                 "feature": col,
-                "mean_lower": ci_mean[0], "mean_upper": ci_mean[1],
-                "median_lower": ci_median[0], "median_upper": ci_median[1]
+                "mean_lower": ci_mean[0],
+                "mean_upper": ci_mean[1],
+                "median_lower": ci_median[0],
+                "median_upper": ci_median[1]
             })
 
         df_out = pd.DataFrame(results)
@@ -570,54 +691,37 @@ class ProbabilisticAnalysis:
         print("→ Bootstrap confidence intervals saved.")
         return df_out
 
-    def univariate_moments(self) -> pd.DataFrame:
-        """Compute skewness and kurtosis for all numeric columns."""
-        stats_df = self.df.select_dtypes(include=np.number).apply(
-            lambda x: pd.Series({
-                "skewness": stats.skew(x.dropna()),
-                "kurtosis": stats.kurtosis(x.dropna(), fisher=True)
-            })
-        )
-        stats_df.to_csv(REPORT_DIR / "skew_kurtosis.csv")
-        print("→ Skewness & kurtosis saved to skew_kurtosis.csv")
-        return stats_df
-
     def generate_final_report(self) -> dict:
         """
         Creates a complete in-memory summary report of all statistical diagnostics.
         Saves both JSON and CSV versions into REPORT_DIR.
 
-        Uses:
-        - self.entropy
-        - self.distributions
-        - self.pit_df
-        - self.copula_model
-        - self.group_stats
-        - self.mi_scores
-        - self.perm_importance_
-        - self.skew_kurt_cache (assigned internally)
-        - self.drift_results_cache (assigned internally)
-
         Returns:
             flags: dict of feature → list of tags
         """
+        # Ensure skew/kurtosis cached
         if not hasattr(self, "skew_kurt_cache"):
             self.skew_kurt_cache = self.df.select_dtypes(include=np.number).apply(
                 lambda x: pd.Series({
-                    "skewness": stats.skew(x.dropna()),
-                    "kurtosis": stats.kurtosis(x.dropna(), fisher=True)
+                    "skewness": stats.skew(x.dropna()) if x.nunique() > 1 else 0.0,
+                    "kurtosis": stats.kurtosis(x.dropna(), fisher=True) if x.nunique() > 1 else 0.0
                 })
             )
 
+        # Ensure drift cached
         if not hasattr(self, "drift_results_cache"):
-            self.drift_results_cache = pd.DataFrame(self.drift_and_divergence_tests()) if callable(
-                getattr(self, 'drift_and_divergence_tests', None)) else pd.DataFrame()
+            if callable(getattr(self, 'drift_and_divergence_tests', None)):
+                self.drift_results_cache = self.drift_and_divergence_tests()
+            else:
+                self.drift_results_cache = pd.DataFrame()
+
+        # Ensure entropy calculated
+        entropy = self.entropy or self.shannon_entropy()
 
         flags = {}
         csv_rows = []
 
         numeric_cols = self.df.select_dtypes(include=np.number).columns
-        entropy = self.entropy or self.shannon_entropy()
         pit_cols = self.pit_df.columns if self.pit_df is not None else []
 
         for col in self.df.columns:
@@ -643,35 +747,50 @@ class ProbabilisticAnalysis:
                 elif entropy[col] < 1.0:
                     f.append("low_entropy")
 
-            # Missing distribution fit
+            # Missing best fit
             if col in numeric_cols and col not in self.distributions:
                 f.append("no_best_fit_found")
 
             # PIT coverage
-            if col in numeric_cols and (col not in pit_cols or self.pit_df[col].isnull().mean() > 0.8):
-                f.append("missing_pit")
+            if col in numeric_cols:
+                if col not in pit_cols or self.pit_df[col].isnull().mean() > 0.8:
+                    f.append("missing_pit")
 
-            # Drift
+            # Drift flags
             if col in self.drift_results_cache["feature"].values:
-                drift_row = self.drift_results_cache[self.drift_results_cache["feature"] == col].iloc[0]
-                if drift_row["PSI"] > 0.3 or drift_row["JSD"] > 0.2:
-                    f.append("high_drift")
-                elif drift_row["PSI"] > 0.1 or drift_row["JSD"] > 0.1:
-                    f.append("moderate_drift")
+                drift_row = self.drift_results_cache[self.drift_results_cache["feature"] == col].head(
+                    1)
+                if not drift_row.empty:
+                    psi = drift_row["PSI"].values[0]
+                    jsd = drift_row["JSD"].values[0]
+                    if psi > 0.3 or jsd > 0.2:
+                        f.append("high_drift")
+                    elif psi > 0.1 or jsd > 0.1:
+                        f.append("moderate_drift")
 
-            # Copula modeling
+            # Copula
             if col in numeric_cols and self.copula_model is None:
                 f.append("missing_copula")
 
             flags[col] = f
             csv_rows.append({"feature": col, "flags": ", ".join(f)})
+        # Optional: nonlinear pattern flag from MI scoring
+        if self.mi_scores is not None:
+            mi_df = pd.read_csv(REPORT_DIR / "target_dependency_scores.csv")
+            for _, row in mi_df.iterrows():
+                if row["method"] == "mutual_info":
+                    col = row["score"]
+                    if col in flags:
+                        flags[col].append("nonlinear_dependency")
+                        for row_ in csv_rows:
+                            if row_["feature"] == col:
+                                row_["flags"] += ", nonlinear_dependency"
 
-        # Save to disk
+        # Save reports
         json_path = REPORT_DIR / "final_summary.json"
         csv_path = REPORT_DIR / "final_summary.csv"
         json_path.write_text(json.dumps(flags, indent=2))
         pd.DataFrame(csv_rows).to_csv(csv_path, index=False)
-
         print(
             f"✅ Final report written to {json_path.name} and {csv_path.name}")
         return flags
@@ -689,18 +808,14 @@ class ProbabilisticAnalysis:
         self.theils_u_matrix()
         self.rank_correlations()
         self.bootstrap_column_ci()
-        self.univariate_moments()
         self.drift_results_cache = self.drift_and_divergence_tests()
-        self.skew_kurt_cache = self.univariate_moments()
         self.generate_final_report()
+        if self.target:
+            self.feature_importance()
 
-        # # 11. Permutation feature importance (if target provided)
-        # pa.feature_importance()
-
-        # # 12. Generate QQ/PP + diagnostic plots for every numeric column that was fitted
-        # for col in pa.distributions:
-        #   pa.qq_pp_plots(col)
-        #   pa.diagnostic_plots(col)
+        for col in self.distributions:
+            self.qq_pp_plots(col)
+            self.diagnostic_plots(col)
 
 
 """

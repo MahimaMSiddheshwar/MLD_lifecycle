@@ -19,13 +19,11 @@ def check_drift_alerts(
     target_drift_score: float,
     performance_alerts: List[str],
     entropy_warnings: List[str],
-    deepcheck_passed: bool,
 ) -> bool:
     print("🔍 Drift Alerts:", data_alerts)
     print("🎯 Target Drift Score:", target_drift_score)
     print("📉 Performance Alerts:", performance_alerts)
     print("🧪 Entropy Warnings:", entropy_warnings)
-    print("🧾 Deepcheck Passed:", deepcheck_passed)
 
     # Custom logic to trigger retraining
     if (
@@ -33,7 +31,6 @@ def check_drift_alerts(
         or target_drift_score > 0.3
         or performance_alerts
         or entropy_warnings
-        or not deepcheck_passed
     ):
         print("⚠️ Drift/Anomaly Detected: Retraining triggered.")
         return True
@@ -55,7 +52,6 @@ def MonitoringPipeline():
         target_drift_score=monitoring_outputs["target_drift_step"],
         performance_alerts=monitoring_outputs["probabilistic_monitor_step"],
         entropy_warnings=monitoring_outputs["entropy_check_step"],
-        deepcheck_passed=monitoring_outputs["deepcheck_validation_step"],
     )
 
     # === Step 4: Retrain with HPO + Ensemble Selection ===

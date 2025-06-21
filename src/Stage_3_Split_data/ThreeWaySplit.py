@@ -4,8 +4,6 @@ import json
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-from deepchecks.tabular import Dataset
-from deepchecks.tabular.suites import TrainTestValidation
 from sklearn.model_selection import train_test_split
 from imblearn.over_sampling import SMOTE
 
@@ -42,7 +40,6 @@ class SplitThreeWay:
         1) Stratified Train/Val/Test split (80/10/10 by default).
         2) If oversample=True and target is classification, apply SMOTE on the training fold only.
         3) Persist train/val/test in Parquet and write a JSON manifest.
-        4) Run Deepchecks TrainTestValidation suite.
         """
 
         y = self.df[self.target]
@@ -88,24 +85,6 @@ class SplitThreeWay:
         }
         with open(self.SPLIT_DIR / "split_manifest.json", "w") as f:
             json.dump(manifest, f, indent=2)
-
-        # 🧪 Run Deepchecks validation suite on Train vs Test
-        cat_features = train.select_dtypes(include="object").columns.tolist()
-        train_ds = Dataset(train, label=self.target, cat_features=cat_features)
-        test_ds = Dataset(test, label=self.target, cat_features=cat_features)
-
-        suite = TrainTestValidation()
-        result = suite.run(train_ds, test_ds)
-
-        result_html = self.SPLIT_DIR / "deepchecks_train_test_validation.html"
-        result.save_as_html(str(result_html))
-
-        # Optional: log to MLflow if available
-        try:
-            import mlflow
-            mlflow.log_artifact(str(result_html))
-        except Exception:
-            pass
 
         return train, val, test
 

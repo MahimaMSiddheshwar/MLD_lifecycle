@@ -4,21 +4,14 @@ import scipy.stats as ss
 from itertools import combinations
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from functools import partial
-from zenml.integrations.deepchecks.steps import (
-    deepchecks_data_drift_check_step,
-    deepchecks_data_integrity_check_step,
-)
-from zenml.integrations.deepchecks.validation_checks import (
-    DeepchecksDataDriftCheck,
-)
 
 # TODO: ADD Constant from .yaml file from config.basic.DATASET_TARGET_COLUMN_NAME
-DATASET_TARGET_COLUMN_NAME = ""
+DATASET_TARGET_COLUMN_NAME = "label"
 
 
 class DataHealthCheck:
     def __init__(self, df: pd.DataFrame,
-                 target_col: str = None,  # Get Target Column
+                 target_col: str = DATASET_TARGET_COLUMN_NAME,  # Get Target Column
                  batch_col: str = None,
                  datetime_cols: list = None):
         self.df = df.copy()
@@ -119,7 +112,6 @@ class DataHealthCheck:
             self.results['batch_distribution'] = vc
 
     def generate_report(self) -> str:
-        self.run_all_checks()
         html = ['<html><head><style>',
                 'body{font-family:sans-serif;padding:20px;}',
                 'h2{border-bottom:1px solid #ddd;}',
@@ -211,46 +203,35 @@ class DataHealthCheck:
             html.append("</table>")
 
         html.append("</body></html>")
-        return "\n".join(html)
+        html_report = "\n".join(html)
+        with open("DataHealthReport.html", "w") as f:
+            f.write(html_report)
+        return html_report
 
-    # Deepchecks data integrity check step
-    def data_integrity_checker():
-        return partial(
-            deepchecks_data_integrity_check_step,
-            id="data_integrity_checker",
-            dataset_kwargs=dict(
-                label=DATASET_TARGET_COLUMN_NAME,
-                cat_features=[],
-            ),
-        )
-
-    # Deepchecks train-test data similarity check step
-    def data_drift_detector():
-        return partial(
-            deepchecks_data_drift_check_step,
-            id="data_drift_detector",
-            dataset_kwargs=dict(
-                label=DATASET_TARGET_COLUMN_NAME, cat_features=[]),
-            check_kwargs={
-                DeepchecksDataDriftCheck.TABULAR_FEATURE_LABEL_CORRELATION_CHANGE: dict(
-                    condition_feature_pps_in_train_less_than=dict(
-                        threshold=1.0,
-                    ),
-                )
-            },
-        )
-
-
-def run_all_checks(self):
-    self.detect_dimensionality()
-    self.detect_missingness()
-    self.detect_dtypes()
-    self.detect_skew_scale()
-    self.detect_categorical_cardinality()
-    self.detect_outliers()
-    self.detect_collinearity()
-    self.detect_vif()
-    self.detect_imbalance()
-    self.detect_date_issues()
-    self.detect_batch_summary()
-    self.generate_report()
+    def run_all_checks(self):
+        """Run all health checks and generate a report."""
+        print("Running data health checks...")
+        self.detect_dimensionality()
+        print("Running data health detect_dimensionality...")
+        self.detect_missingness()
+        print("Running data health detect_missingness...")
+        self.detect_dtypes()
+        print("Running data health detect_dtypes...")
+        self.detect_skew_scale()
+        print("Running data health detect_skew_scale...")
+        self.detect_categorical_cardinality()
+        print("Running data health detect_categorical_cardinality...")
+        self.detect_outliers()
+        print("Running data health detect_outliers...")
+        self.detect_collinearity()
+        print("Running data health detect_collinearity...")
+        self.detect_vif()
+        print("Running data health detect_multi_Collinearity...")
+        self.detect_imbalance()
+        print("Running data health detect_imbalance...")
+        self.detect_date_issues()
+        print("Running data health detect_date_issues...")
+        self.detect_batch_summary()
+        print("Running data health detect_batch_summary...")
+        print("Generating HTML report...")
+        return self.generate_report()

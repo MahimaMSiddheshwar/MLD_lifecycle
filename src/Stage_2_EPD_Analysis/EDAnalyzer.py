@@ -38,7 +38,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
-from sklearn.metrics import mutual_info_classif, mutual_info_regression
+from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 
 import pingouin as pg
 # from pandas_profiling import ProfileReport
@@ -71,7 +71,7 @@ class EDAnalyzer:
     def __init__(
         self,
         df: pd.DataFrame,
-        outdir: str = "eda_v3_output",
+        outdir: str = "reports",
         mode: str = "auto",
         corr_threshold: float = 0.3,
         assoc_threshold: float = 0.2,

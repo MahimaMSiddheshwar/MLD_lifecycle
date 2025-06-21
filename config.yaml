@@ -1,9 +1,3 @@
-config:
-  basic: 
-    DATASET_TARGET_COLUMN_NAME: target
-    
-
-
 steps:
   evaluator:
     enable_cache: Optional[bool]

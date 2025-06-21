@@ -2,20 +2,24 @@
 
 set -Eeo pipefail
 
-zenml integration install sklearn xgboost lightgbm mlflow great_expectations evidently whylogs deepchecks -y
+poetry run zenml integration install sklearn xgboost lightgbm mlflow great_expectations evidently whylogs  -y
 
-zenml data-validator register ge_validator --flavor=great_expectations
-zenml data-validator register deepchecks_validator --flavor=deepchecks
-zenml data-validator register evidently_validator --flavor=evidently
+poetry run zenml data-validator register ge_validator --flavor=great_expectations
+poetry run zenml data-validator register evidently_validator --flavor=evidently
 
-zenml experiment-tracker register local_mlflow_tracker  --flavor=mlflow
-zenml model-deployer register local_mlflow_deployer  --flavor=mlflow
+poetry run zenml experiment-tracker register local_mlflow_tracker  --flavor=mlflow
+poetry run zenml model-deployer register local_mlflow_deployer  --flavor=mlflow
 
-zenml stack register local_gitflow_stack \
+poetry run zenml stack register local_stack \
     -a default \
     -o default \
     -e local_mlflow_tracker \
     -d local_mlflow_deployer \
-    -dv deepchecks_data_validator
+    -dv ge_validator \
+    -dv evidently_validator \
+    -c sklearn \
+    -c xgboost \
+    -c lightgbm \
+    -c whylogs
 
-zenml stack set local_gitflow_stack
+poetry run zenml stack set local_stack

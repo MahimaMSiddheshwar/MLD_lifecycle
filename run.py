@@ -19,7 +19,6 @@ from zenml import Model
 from zenml.client import Client
 from zenml.config import DockerSettings
 from zenml.enums import ExecutionStatus
-from zenml.integrations.deepchecks import DeepchecksIntegration
 from zenml.integrations.mlflow.mlflow_utils import get_tracking_uri
 from zenml.utils.enum_utils import StrEnum
 
@@ -87,11 +86,9 @@ def main(
         required_integrations=[
             "sklearn",
             "mlflow",
-            "deepchecks",
             "s3",
             "kubernetes",
         ],
-        apt_packages=DeepchecksIntegration.APT_PACKAGES,  # for Deepchecks
     )
     settings["docker"] = docker_settings
 

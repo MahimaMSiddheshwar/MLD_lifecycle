@@ -30,18 +30,14 @@ black = "^25.1.0"
 mypy = "^1.16.0"
 statsmodels = "^0.14.4"
 pingouin = "^0.5.5"
-scikit-learn = "^1.7.0"
-optuna = "^4.3.0"
-catboost = "^1.2.8"
-imbalanced-learn = "^0.12"
+copulas = "^0.12.3"
+
 
 [tool.poetry.scripts]
-train = "pipeline/TrainingPipeline.py:TrainingPipeline"
-test = "pipeline/PredictionPipeline.py:PredictionPipeline"
-tune = "pipeline/pipeline/Optuna_HPO.py:OptunaHPO"
-monitor = "pipeline/monitoring_pipeline.py:MonitoringPipeline"
+test = "pipeline.test:main"
 
-
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -26,14 +26,12 @@ export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -
 export INGRESS_URL="http://${INGRESS_HOST}:${INGRESS_PORT}"
 
 zenml model-deployer register kserve_s3 --flavor=kserve --kubernetes_context=kubeflowmultitenant  --kubernetes_namespace=zenml-workloads --base_url=$INGRESS_URL --secret=kservesecret 
-zenml data-validator register deepchecks_data_validator --flavor=deepchecks
 
 zenml stack register aws_gitflow_stack \
     -a s3_store \
     -c ecr_registry \
     -o multi_tenant_kubeflow \
     -d kserve_s3 \
-    -dv deepchecks_data_validator \
     -e aws_mlflow_tracker \
     -i local_image_builder || \
   msg "${WARNING}Reusing preexisting stack ${NOFORMAT}kubeflow_gitflow_stack"
