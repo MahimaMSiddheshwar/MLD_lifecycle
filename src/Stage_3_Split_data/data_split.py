@@ -5,7 +5,13 @@ from typing import Tuple
 import pandas as pd
 from BaselineModel import AutoBaseline
 
-DATASET_TARGET_COLUMN_NAME = ""
+DATASET_TARGET_COLUMN_NAME = "label"
+
+
+@step
+def baseline(train, test):
+    baselineModel = AutoBaseline(target=DATASET_TARGET_COLUMN_NAME)
+    baselineModel.run(train, test)
 
 
 @step
@@ -15,7 +21,6 @@ def data_splitter(
     stratify: bool = True,
     oversample: bool = True,
     seed: int = 42,
-    generate_baseline: bool = True
 ) -> Tuple[Annotated[pd.DataFrame, "train"], Annotated[pd.DataFrame, "test"], Annotated[pd.DataFrame, "test"]]:
     if not DATASET_TARGET_COLUMN_NAME:
         raise ValueError(
@@ -26,8 +31,5 @@ def data_splitter(
         seed=seed,
         oversample=oversample,
         target=target)
-    if generate_baseline:
-        baselineModel = AutoBaseline(target=DATASET_TARGET_COLUMN_NAME)
-        baselineModel.run(train, pd.concatenate(test, val))
 
     return train, test, val

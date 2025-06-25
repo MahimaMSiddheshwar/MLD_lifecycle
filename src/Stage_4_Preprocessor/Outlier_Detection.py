@@ -9,7 +9,7 @@ stage3_outlier_detection.py
 – fit/fit_transform: detect + (drop or winsorize) automatically, with full reporting
 – transform(): flag outliers (no removal) on new data
 """
-
+import pickle
 from typing import List, Dict, Any
 import numpy as np
 import pandas as pd
@@ -56,8 +56,8 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
     UNIV_ZSCORE_CUTOFF = 3.0    # |z| > 3.0
     UNIV_MODZ_CUTOFF = 3.5    # |modified_z| > 3.5
     TUKEY_MULTIPLIER = 2.0    # Tukey uses 2× IQR
-    PCTL_LOW = 1      # 1st percentile
-    PCTL_HIGH = 99     # 99th percentile
+    PCTL_LOW = 3      # 3st percentile
+    PCTL_HIGH = 97     # 97th percentile
 
     # Multivariate settings
     GAUSS_SKEW_THRESH = 1.0    # abs(skew) < 1.0
@@ -113,6 +113,33 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
     def _log(self, msg: str):
         if self.verbose:
             print(msg)
+
+    def _save_state(self, filepath: str = "outlier_model_state.pkl"):
+        state = {
+            "numeric_cols": self.numeric_cols,
+            "scaler": self.scaler,
+            "cov_estimator": self.cov_estimator,
+            "lof_model": self.lof_model,
+            "iso_model": self.iso_model,
+            "mahal_threshold": self.mahal_threshold,
+            "outlier_threshold": self.outlier_threshold,
+            "train_clean_": self.train_clean_,
+            "UNIV_IQR_FACTOR": self.UNIV_IQR_FACTOR,
+            "UNIV_ZSCORE_CUTOFF": self.UNIV_ZSCORE_CUTOFF,
+            "UNIV_MODZ_CUTOFF": self.UNIV_MODZ_CUTOFF,
+            "TUKEY_MULTIPLIER": self.TUKEY_MULTIPLIER,
+            "PCTL_LOW": self.PCTL_LOW,
+            "PCTL_HIGH": self.PCTL_HIGH,
+        }
+        with open(filepath, "wb") as f:
+            pickle.dump(state, f)
+        self._log(f"✔ Model state saved to {filepath}")
+
+    def _load_state(self, filepath: str = "outlier_model_state.pkl"):
+        with open(filepath, "rb") as f:
+            state = pickle.load(f)
+        self.__dict__.update(state)
+        self._log(f"✔ Model state loaded from {filepath}")
 
     # ───────────── Univariate Outlier Rules ─────────────
 
@@ -214,7 +241,7 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
     def _fit_lof(self, df_numeric: pd.DataFrame):
         """
         Fit a LocalOutlierFactor model in novelty mode so we can call .predict(...) on new data.
-        Contamination fixed at ISO_CONTAMINATION. 
+        Contamination fixed at ISO_CONTAMINATION.
         """
         lof = LocalOutlierFactor(
             n_neighbors=20,
@@ -263,7 +290,7 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
                → run Mahalanobis. If Mahalanobis flags ≤5% of rows, accept those. Otherwise fall through.
           3) Else if (n_samples < LOF_MAX_SAMPLES) and (n_features < LOF_MAX_FEATURES):
                → run LOF. If LOF flags ≤5% of rows, accept those. Otherwise fall through.
-          4) Otherwise run IsolationForest.  
+          4) Otherwise run IsolationForest.
 
         Returns a list of flagged row indices.
         """
@@ -295,8 +322,8 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
         # 2) Check “Gaussian-like” fraction
         skews = df_num.apply(lambda col: abs(col.dropna().skew()), axis=0)
         kurts = df_num.apply(lambda col: abs(col.dropna().kurtosis()), axis=0)
-        gaussian_like = ((skews < self.GAUSS_SKEW_THRESH) &
-                         (kurts < self.GAUSS_KURT_THRESH)).sum()
+        gaussian_like = ((skews < self.GAUSS_SKEW_THRESH)
+                         & (kurts < self.GAUSS_KURT_THRESH)).sum()
         frac_gaussian = gaussian_like / float(n_features)
 
         # Attempt Mahalanobis if conditions met
@@ -358,11 +385,18 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
         }
         return iso_idxs
 
+    def find_numeric_columns(self, df: pd.DataFrame) -> List[str]:
+        """
+        Helper function to find numeric columns in a DataFrame.
+        Returns a list of column names that are numeric.
+        """
+        return df.select_dtypes(include=[np.number]).columns.tolist()
+
     # ────────────── Main Fit & Fit_Transform ──────────────
 
-    def fit(self, df: pd.DataFrame, numeric_cols: List[str]):
+    def fit(self, df: pd.DataFrame):
         """
-        1) Store original df + numeric_cols
+        1) Store original df 
         2) Run all univariate rules, build a per-row votes_table_
         3) Run detect_multivariate_outliers(), increment votes in votes_table_
         4) Mark “real_outliers” = rows whose total votes ≥ outlier_threshold
@@ -376,6 +410,7 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
         """
         # 1) Store
         self.df = df.copy()
+        numeric_cols = self.find_numeric_columns(df)
         self.numeric_cols = numeric_cols.copy()
 
         # Initialize votes_table_ with zeros
@@ -538,18 +573,19 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
 
         final_count = len(self.train_clean_)
         self._log(f"→ After treatment, training set has {final_count} rows.")
-
+        self._save_state("outlier_model_state.pkl")
         return self
 
-    def fit_transform(self, df: pd.DataFrame, numeric_cols: List[str]) -> pd.DataFrame:
+    def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Convenience: run fit(...) then return train_clean_.
         """
+        numeric_cols = self.find_numeric_columns(df)
         return self.fit(df, numeric_cols).train_clean_
 
     # ────────────── Transform (Flag Only on New Data) ──────────────
 
-    def transform(self, df: pd.DataFrame, numeric_cols: List[str]) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Flag outliers on new data (no dropping or winsorization). Returns a copy
         of df with an extra boolean column 'is_outlier'. Relies on:
@@ -559,7 +595,9 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
           – self.mahal_threshold       (χ² cutoff)
           – self.outlier_threshold     (vote threshold)
         """
+        self._load_state("outlier_model_state.pkl")
         result = df.copy()
+        numeric_cols = [col for col in self.numeric_cols if col in df.columns]
         df_num = result[numeric_cols].copy()
 
         # Initialize votes column
@@ -577,8 +615,8 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
             # (a) IQR
             q1, q3 = np.percentile(arr_train, [25, 75])
             iqr = q3 - q1
-            lb_iqr, ub_iqr = q1 - self.UNIV_IQR_FACTOR * \
-                iqr, q3 + self.UNIV_IQR_FACTOR * iqr
+            lb_iqr, ub_iqr = q1 - self.UNIV_IQR_FACTOR
+            * iqr, q3 + self.UNIV_IQR_FACTOR * iqr
             mask_iqr = (result[col] < lb_iqr) | (result[col] > ub_iqr)
             votes.loc[mask_iqr] += 1
 
@@ -598,8 +636,8 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
                 votes.loc[mask_modz] += 1
 
             # (d) Tukey
-            lb_tukey, ub_tukey = q1 - self.TUKEY_MULTIPLIER * \
-                iqr, q3 + self.TUKEY_MULTIPLIER * iqr
+            lb_tukey, ub_tukey = q1 - self.TUKEY_MULTIPLIER
+            * iqr, q3 + self.TUKEY_MULTIPLIER * iqr
             mask_tukey = (result[col] < lb_tukey) | (result[col] > ub_tukey)
             votes.loc[mask_tukey] += 1
 
@@ -620,8 +658,8 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
                     Xz_new = self.scaler.transform(
                         df_num.loc[complete_mask].values)
                     md_new = self.cov_estimator.mahalanobis(Xz_new)
-                    idxs_mha = df_num.loc[complete_mask].index[md_new >
-                                                               self.mahal_threshold]
+                    idxs_mha = df_num.loc[complete_mask].index[md_new
+                                                               > self.mahal_threshold]
                     votes.loc[idxs_mha] += 1
                 except Exception:
                     pass
@@ -650,34 +688,6 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
                 except Exception:
                     pass
 
-        # Final outlier flag
-        result["is_outlier"] = votes >= self.outlier_threshold
-        return result
-
-
-# from stage3_outlier_detection import OutlierDetector
-
-# # 1) Create detector
-# detector = OutlierDetector(
-#     outlier_threshold=3,
-#     robust_covariance=True,
-#     cap_outliers=None,        # “detect only” mode
-#     model_family="linear",    # will force winsorize unless cap_outliers=False
-#     random_state=0,
-#     verbose=True
-# )
-
-# # 2) Fit + Treat on training data
-# train_clean = detector.fit_transform(train_df, numeric_cols)
-
-# # 3) Inspect reports if you like:
-# print(detector.report["univariate_outliers"])         # per-column rule counts
-# print(detector.report["multivariate_outliers"])       # chosen method, etc.
-# print(detector.report["real_outliers"])               # list of flagged indices
-# print(detector.report["treatment"])                   # what was done: drop/winsorize
-# print(detector.votes_table_.head())                   # see each row’s votes
-# print(detector.clipped_counts_)                       # how many clipped per column
-
-# # 4) On new (validation/test) data, simply flag:
-# val_flagged = detector.transform(val_df, numeric_cols)
-# # – val_flagged will have the same columns + an “is_outlier” boolean column
+        # Final outlier flag: store internally instead of modifying the df
+        self.outlier_flags_ = votes >= self.outlier_threshold
+        return df.copy()  # Return unmodified input

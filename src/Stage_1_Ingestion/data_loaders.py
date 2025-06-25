@@ -1,10 +1,8 @@
-import sys
 import pandas as pd
 from zenml import step
 from .DataCollector import DataCollector
 from .DataHealthCheck import DataHealthCheck
-from src.Stage_2_EPD_Analysis.EDAnalyzer import EDAnalyzer
-from src.Stage_2_EPD_Analysis.UnifiedEPDA import UnifiedEPDA
+
 
 DATASET_TARGET_COLUMN_NAME = "label"
 
@@ -38,28 +36,4 @@ def dataLoader(file: str = None, project: str = "Default") -> pd.DataFrame:
         raise ValueError(
             f"Target column '{DATASET_TARGET_COLUMN_NAME}' not found in DataFrame.")
     print(f"Data loaded successfully from {file} with shape {df.shape}.")
-    return df
-
-
-@step
-def EDAnalyze(df: pd.DataFrame, project: str = "Default") -> pd.DataFrame:
-    """
-    Placeholder for EPD Analysis step.
-    Currently just returns the DataFrame unchanged.
-    """
-    print(f"EPD Analysis completed for project '{project}'.")
-    EDAnalyse = EDAnalyzer(df)
-    asasa = EDAnalyse.run()
-    return df
-
-
-@step
-def PEDAnalyze(df: pd.DataFrame, project: str = "Default") -> pd.DataFrame:
-    """
-    Placeholder for EPD Analysis step.
-    Currently just returns the DataFrame unchanged.
-    """
-    print(f"EPD Analysis completed for project '{project}'.")
-    PEDAnalyse = UnifiedEPDA(df)
-    asasa = PEDAnalyse.run()
     return df

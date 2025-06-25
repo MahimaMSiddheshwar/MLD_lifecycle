@@ -1,64 +1,38 @@
 #!/usr/bin/env python3
-"""
-Stage 2: Numeric & Categorical Missing‐Value Imputation
-
-  • Uses multiple candidates (mean, median, KNN, MICE, random‐sample) for numerics.
-  • For categoricals: mode, constant “__MISSING__”, or random‐sample via TVD minimization.
-  • Never drops a column unless missing fraction > max_missing_frac_drop (default 0.90).
-  • Performs Little’s test (omnibus) plus per‐column logistic regression to classify MCAR vs MAR/MNAR.
-  • Exposes all thresholds as class‐level constants or __init__ parameters.
-"""
-
+from __future__ import annotations
 import time
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
-
+from typing import List, Dict, Tuple, Optional, Union
+import pickle
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
-from statsmodels.stats.missing import test_missingness  # omnibus MCAR
-
+from src.utils.perfkit import perfclass, PerfMixin
 from sklearn.base import clone
 from sklearn.impute import SimpleImputer, KNNImputer, IterativeImputer
 from sklearn.linear_model import BayesianRidge, LogisticRegression
 from sklearn.covariance import EmpiricalCovariance
 
-log = logging.getLogger("stage2")
+log = logging.getLogger("stage4")
 REPORT_PATH = Path("reports/missingness")
 REPORT_PATH.mkdir(parents=True, exist_ok=True)
+DEFAULT_MODEL_PATH = Path("models/missing_model.pkl")
+DEFAULT_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+MAX_MISSING_FRAC_DROP: float = 0.90
+KNN_NEIGHBORS: int = 5
+CAT_TVD_CUTOFF: float = 0.20
+KNM_MICE_MAX_ROWS: int = 5000
+KNM_MICE_MAX_COLS: int = 500
+VARIANCE_RATIO_CUTOFF: float = 0.50
+COV_CHANGE_CUTOFF: float = 0.20
+RARE_FREQ_CUTOFF: float = 0.01
+RANDOM_STATE: int = 42
 
 
 class MissingnessAnalyzer:
-    """
-    Detects missingness mechanism for each column individually.
-    - Uses Little’s MCAR test for all columns at once.
-    - Uses per‐column logistic regression to decide MCAR vs MAR/MNAR.
-
-    If per‐column p‐value > ALPHA → “MCAR”; else “MAR/MNAR”.
-    Saves a JSON report at reports/missingness/column_missingness.json.
-    """
-    ALPHA = 0.05  # significance threshold to declare MAR/MNAR
-
-    @staticmethod
-    def omnibus_mcar_test(df: pd.DataFrame) -> Tuple[float, str]:
-        """
-        Run Little’s MCAR test across all columns that have any NA.
-        Returns (pvalue, mechanism).  Mechanism = "MCAR" if p > ALPHA else "MAR/MNAR".
-        """
-        na_counts = df.isna().sum()
-        cols_na = na_counts[na_counts > 0].index.tolist()
-        if len(cols_na) < 2:
-            return (np.nan, "too_few_nas")
-
-        try:
-            res = test_missingness(df[cols_na])
-            pval = float(res.pvalue)
-            mech = "MCAR" if (pval > MissingnessAnalyzer.ALPHA) else "MAR/MNAR"
-            return (pval, mech)
-        except Exception:
-            return (np.nan, "test_failed")
+    ALPHA = 0.05
 
     @staticmethod
     def per_column_missingness(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
@@ -88,7 +62,12 @@ class MissingnessAnalyzer:
             y = series.isna().astype(int)
 
             # Build design X = [ indicators of other columns being NOT missing ]
-            X = df.drop(columns=[col]).notna().astype(int)
+            X = df.drop(columns=[col])
+            try:
+                X = X.notna().astype(int)
+            except Exception:
+                X = X.notna().applymap(lambda x: int(x))  # slower, but safe
+
             if X.shape[1] < 1 or y.sum() == 0:
                 # Nothing to fit if only one column or no missing
                 results[col] = {
@@ -102,13 +81,8 @@ class MissingnessAnalyzer:
                 lr = LogisticRegression(
                     solver="liblinear", random_state=0, max_iter=100)
                 lr.fit(X, y)
-
-                # Approximate Wald p‐values:
-                #  se_i = sqrt( [ (X^T X)^-1 ]_ii )
-                #  z_i = coef_i / se_i  → p_i = 2*(1 - Phi(|z_i|))
                 Xmat = X.values
                 XtX = np.dot(Xmat.T, Xmat)
-                # Regularize diagonal slightly to avoid singular matrix
                 diag_eps = np.eye(X.shape[1]) * 1e-6
                 inv_XtX = np.linalg.inv(XtX + diag_eps)
 
@@ -145,7 +119,8 @@ class MissingnessAnalyzer:
         return results
 
 
-class MissingImputer:
+@perfclass()
+class MissingImputer(PerfMixin):
     """
     Stage 2: Missing‐Value Imputation
 
@@ -181,25 +156,12 @@ class MissingImputer:
     """
 
     # ── Class‐Level Defaults ───────────────────────────────────────────
-    MAX_MISSING_FRAC_DROP: float = 0.90
-    KNN_NEIGHBORS: int = 5
-    CAT_TVD_CUTOFF: float = 0.20
-    KNM_MICE_MAX_ROWS: int = 5000
-    KNM_MICE_MAX_COLS: int = 5000
-
-    VARIANCE_RATIO_CUTOFF: float = 0.50
-    COV_CHANGE_CUTOFF: float = 0.20
-
-    RARE_FREQ_CUTOFF: float = 0.01
-    RANDOM_STATE: int = 42
 
     def __init__(
         self,
         max_missing_frac_drop: float = MAX_MISSING_FRAC_DROP,
         knn_neighbors: int = KNN_NEIGHBORS,
         cat_tvd_cutoff: float = CAT_TVD_CUTOFF,
-        numeric_missing_threshold: float = 0.95,       # legacy; not used
-        categorical_missing_threshold: float = 0.95,   # legacy; not used
         knn_mice_max_rows: int = KNM_MICE_MAX_ROWS,
         knn_mice_max_columns: int = KNM_MICE_MAX_COLS,
         var_ratio_cutoff: float = VARIANCE_RATIO_CUTOFF,
@@ -207,13 +169,13 @@ class MissingImputer:
         rare_freq_cutoff: float = RARE_FREQ_CUTOFF,
         random_state: int = RANDOM_STATE,
         verbose: bool = False,
+        n_jobs: Union[int, float, None] = None,
+        use_gpu: Optional[bool] = None,
     ):
         # Configuration
         self.max_missing_frac_drop = max_missing_frac_drop
         self.knn_neighbors = knn_neighbors
         self.cat_tvd_cutoff = cat_tvd_cutoff  # unused, but kept for signature
-        self.numeric_missing_threshold = numeric_missing_threshold
-        self.categorical_missing_threshold = categorical_missing_threshold
         self.knn_mice_max_rows = knn_mice_max_rows
         self.knn_mice_max_columns = knn_mice_max_columns
         self.var_ratio_cutoff = var_ratio_cutoff
@@ -234,6 +196,9 @@ class MissingImputer:
         # Categorical imputers: { col: (strategy_name, value_or_None) }
         self.categorical_imputers: Dict[str, Tuple[str, Optional[str]]] = {}
 
+        # (B) hand-off to PerfMixin  (chains Parallel & GPU)
+        super().__init__(n_jobs=n_jobs, use_gpu=use_gpu)
+
         # Aggregated report
         self.report: Dict[str, Dict] = {
             "missing_pattern": {},
@@ -247,6 +212,31 @@ class MissingImputer:
         """Print to stdout if verbose=True."""
         if self.verbose:
             print(msg)
+
+    def save(self, filepath: Union[str, Path]):
+        state = {
+            "numeric_cols": self.numeric_cols,
+            "categorical_cols": self.categorical_cols,
+            "cols_to_drop": self.cols_to_drop,
+            "numeric_imputers": self.numeric_imputers,
+            "categorical_imputers": self.categorical_imputers,
+            "report": self.report,
+            "random_state": self.random_state,
+        }
+        with open(filepath, "wb") as f:
+            pickle.dump(state, f)
+        self._log(f"✔ Saved MissingImputer model to {filepath}")
+
+    def load(self, filepath: Union[str, Path]):
+        with open(filepath, "rb") as f:
+            state = pickle.load(f)
+        self.numeric_cols = state["numeric_cols"]
+        self.categorical_cols = state["categorical_cols"]
+        self.cols_to_drop = state["cols_to_drop"]
+        self.numeric_imputers = state["numeric_imputers"]
+        self.categorical_imputers = state["categorical_imputers"]
+        self.report = state["report"]
+        self.random_state = state.get("random_state", 42)
 
     def _report_other_columns(self, df: pd.DataFrame) -> None:
         """
@@ -307,6 +297,8 @@ class MissingImputer:
         Impute numeric by drawing random samples (with replacement) from non‐missing values.
         """
         nonnull = orig.dropna().values
+        if len(nonnull) == 0:
+            return out.fillna(0.0)
         out = orig.copy()
         mask = out.isna()
         if len(nonnull) == 0:
@@ -364,15 +356,21 @@ class MissingImputer:
                     temp.loc[complete_idx].values).covariance_
                 idx_feat = self.numeric_cols.index(col)
                 diff = np.abs(cov_after[idx_feat, :] - cov_before[idx_feat, :])
-                denom = np.abs(cov_before[idx_feat, :]) + 1e-9
+                denom = np.abs(cov_before[idx_feat, :]) + np.finfo(float).eps
                 cov_change = float(np.sum(diff / denom))
         return ks_p, var_ratio, cov_change
+
+    def get_imputer(self, col: str) -> Optional[Tuple[str, Optional[object]]]:
+        return (
+            self.numeric_imputers.get(col)
+            or self.categorical_imputers.get(col)
+            or None
+        )
 
     def fit(
         self,
         train_df: pd.DataFrame,
-        val_df: pd.DataFrame = None,
-    ) -> "Stage2Imputer":
+    ):
         """
         Fit imputers on train_df (and optionally val_df):
           0) Analyze missingness pattern (Little’s + logistic) on train_df.
@@ -423,8 +421,8 @@ class MissingImputer:
         self._cast_mixed_numeric(df0)
 
         # 3) Identify numeric vs categorical (100% pure)
-        self.numeric_cols = df0.select_dtypes(
-            include=[np.number]).columns.tolist()
+        self.numeric_cols = [c for c in df0.select_dtypes(
+            include=[np.number]).columns if c not in self.cols_to_drop]
         self.categorical_cols = [
             c for c in df0.columns if c not in self.numeric_cols]
 
@@ -435,6 +433,48 @@ class MissingImputer:
         # 5) Compute covariance before imputation (on complete cases)
         cov_before = self._compute_cov_before()
 
+        knn_block = None
+        mice_block = None
+        knn_imp = None
+        mice_imp = None
+
+        can_use_knn_mice = (
+            df0.shape[0] <= self.knn_mice_max_rows
+            and len(self.numeric_cols) <= self.knn_mice_max_columns
+        )
+
+        if can_use_knn_mice and self.train_numeric is not None:
+            try:
+                knn_imp = KNNImputer(n_neighbors=self.knn_neighbors)
+                knn_block = pd.DataFrame(
+                    knn_imp.fit_transform(self.train_numeric),
+                    columns=self.numeric_cols,
+                    index=self.train_numeric.index
+                )
+                self._log("  • Precomputed KNN imputed block.")
+            except Exception as e:
+                self._log(f"  ⚠ KNN precompute failed: {e}")
+                knn_block = None
+
+            try:
+                mice_imp = IterativeImputer(
+                    estimator=BayesianRidge(),
+                    sample_posterior=True,
+                    random_state=self.random_state,
+                    max_iter=10
+                )
+                mice_block = pd.DataFrame(
+                    mice_imp.fit_transform(self.train_numeric),
+                    columns=self.numeric_cols,
+                    index=self.train_numeric.index
+                )
+                self._log("  • Precomputed MICE imputed block.")
+            except Exception as e:
+                self._log(f"  ⚠ MICE precompute failed: {e}")
+                mice_block = None
+        else:
+            self._log(
+                f"    • knn/mice skipped (dataset too large: rows={n_rows}, num_cols={n_num_cols})")
         # 6) Impute numeric columns
         for col in self.numeric_cols:
             orig = df0[col]
@@ -472,6 +512,20 @@ class MissingImputer:
                     f"    • mean: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
             except Exception:
                 pass
+            if knn_block is not None:
+                try:
+                    start = time.time()
+                    arr = knn_block[col]
+                    ks_p, vr, cc = self._evaluate_impute_num(
+                        col, orig_series, arr, cov_before)
+                    runtime = time.time() - start
+                    metrics["knn"] = (ks_p, vr, cc, runtime)
+                    candidates["knn"] = arr
+                    imputers["knn"] = clone(knn_imp)
+                    self._log(
+                        f"    • knn (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+                except Exception:
+                    pass
 
             # --- Median Imputer ---
             try:
@@ -510,58 +564,37 @@ class MissingImputer:
 
             # Only if small enough, evaluate KNN and MICE
             n_rows, n_num_cols = df0.shape[0], len(self.numeric_cols)
-            if n_rows <= self.knn_mice_max_rows and n_num_cols <= self.knn_mice_max_columns:
-                # --- KNN Imputer ---
+            # --- KNN Imputer ---
+            if knn_block is not None:
                 try:
                     start = time.time()
-                    imp = KNNImputer(n_neighbors=self.knn_neighbors)
-                    tmp = self.train_numeric.copy()
-                    tmp_imp = pd.DataFrame(
-                        imp.fit_transform(tmp),
-                        columns=self.numeric_cols,
-                        index=tmp.index
-                    )
-                    arr = tmp_imp[col]
+                    arr = knn_block[col]
                     ks_p, vr, cc = self._evaluate_impute_num(
                         col, orig_series, arr, cov_before)
                     runtime = time.time() - start
                     metrics["knn"] = (ks_p, vr, cc, runtime)
                     candidates["knn"] = arr
-                    imputers["knn"] = clone(imp)
+                    imputers["knn"] = clone(knn_imp)
                     self._log(
-                        f"    • knn: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+                        f"    • knn (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
                 except Exception:
                     pass
 
-                # --- MICE Imputer ---
+            # --- MICE Imputer ---
+            if mice_block is not None:
                 try:
                     start = time.time()
-                    imp = IterativeImputer(
-                        estimator=BayesianRidge(),
-                        sample_posterior=True,
-                        random_state=self.random_state,
-                        max_iter=10
-                    )
-                    tmp = self.train_numeric.copy()
-                    tmp_imp = pd.DataFrame(
-                        imp.fit_transform(tmp),
-                        columns=self.numeric_cols,
-                        index=tmp.index
-                    )
-                    arr = tmp_imp[col]
+                    arr = mice_block[col]
                     ks_p, vr, cc = self._evaluate_impute_num(
                         col, orig_series, arr, cov_before)
                     runtime = time.time() - start
                     metrics["mice"] = (ks_p, vr, cc, runtime)
                     candidates["mice"] = arr
-                    imputers["mice"] = clone(imp)
+                    imputers["mice"] = clone(mice_imp)
                     self._log(
-                        f"    • mice: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+                        f"    • mice (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
                 except Exception:
                     pass
-            else:
-                self._log(
-                    f"    • knn/mice skipped (dataset too large: rows={n_rows}, num_cols={n_num_cols})")
 
             # --- Choose Best Candidate ---
             best_method: Optional[str] = None
@@ -621,7 +654,7 @@ class MissingImputer:
             rare_levels = set(freq[freq < self.rare_freq_cutoff].index)
             if rare_levels:
                 df0[col] = df0[col].apply(
-                    lambda x: "__RARE__" if x in rare_levels else x)
+                    lambda x: "__RARE__" if x in rare_levels else x).astype("category")
                 self._log(
                     f"  • Categorical '{col}': collapsed {len(rare_levels)} rare levels → '__RARE__'")
 
@@ -645,15 +678,15 @@ class MissingImputer:
                 mode_val = "__MISSING__"
             arr_mode = orig.fillna(mode_val)
             tvd_mode = float(np.sum(
-                np.abs(orig.dropna().value_counts(normalize=True) -
-                       arr_mode.value_counts(normalize=True)).loc[orig.dropna().unique()]
+                np.abs(orig.dropna().value_counts(normalize=True)
+                       - arr_mode.value_counts(normalize=True)).loc[orig.dropna().unique()]
             ))
 
             # Constant "__MISSING__"
             arr_const = orig.fillna("__MISSING__")
             tvd_const = float(np.sum(
-                np.abs(orig.dropna().value_counts(normalize=True) -
-                       arr_const.value_counts(normalize=True)).loc[orig.dropna().unique()]
+                np.abs(orig.dropna().value_counts(normalize=True)
+                       - arr_const.value_counts(normalize=True)).loc[orig.dropna().unique()]
             ))
 
             # Random-sample
@@ -667,8 +700,8 @@ class MissingImputer:
                 arr_rand.loc[mask] = rng.choice(
                     nonnull_vals, size=mask.sum(), replace=True)
             tvd_rand = float(np.sum(
-                np.abs(orig.dropna().value_counts(normalize=True) -
-                       arr_rand.value_counts(normalize=True)).loc[orig.dropna().unique()]
+                np.abs(orig.dropna().value_counts(normalize=True)
+                       - arr_rand.value_counts(normalize=True)).loc[orig.dropna().unique()]
             ))
 
             scores = {
@@ -694,6 +727,8 @@ class MissingImputer:
 
         # Final: store fully imputed training dataframe
         self.train_imputed_ = df0.copy()
+        self._log("MissingImputer → fit() completed.")
+        self.save(DEFAULT_MODEL_PATH)
         return self
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -704,6 +739,13 @@ class MissingImputer:
          - For categorical cols: apply the chosen strategy & value
         """
         df1 = df.copy()
+        if not hasattr(self, "numeric_imputers") or not self.numeric_imputers:
+            if self.model_path.exists():
+                self.load(self.model_path)
+                self._log(f"ℹ Auto-loaded imputer from {self.model_path}")
+            else:
+                raise RuntimeError(
+                    "No fitted state found. Please run `.fit()` before calling `.transform()`.")
 
         # 1) Drop the same columns
         df1 = df1.drop(
@@ -728,7 +770,15 @@ class MissingImputer:
                     columns=self.numeric_cols,
                     index=num_block.index
                 )
-                df1[self.numeric_cols] = num_block_imp
+                valid_cols = [
+                    col for col in self.numeric_cols if col in df1.columns]
+                num_block_imp = pd.DataFrame(
+                    imputer_obj.transform(df1[valid_cols]),
+                    columns=valid_cols,
+                    index=df1.index
+                )
+                df1[valid_cols] = num_block_imp
+
                 break  # as all numeric columns are replaced already
             elif method == "mice" and imputer_obj is not None:
                 num_block = df1[self.numeric_cols].copy()
@@ -737,7 +787,14 @@ class MissingImputer:
                     columns=self.numeric_cols,
                     index=num_block.index
                 )
-                df1[self.numeric_cols] = num_block_imp
+                valid_cols = [
+                    col for col in self.numeric_cols if col in df1.columns]
+                num_block_imp = pd.DataFrame(
+                    imputer_obj.transform(df1[valid_cols]),
+                    columns=valid_cols,
+                    index=df1.index
+                )
+                df1[valid_cols] = num_block_imp
                 break
             elif method == "random_sample":
                 df1[col] = self._random_sample_impute_num(series)
@@ -774,328 +831,3 @@ class MissingImputer:
         """Convenience: run fit(df), then transform(df)."""
         self.fit(df)
         return self.transform(df)
-
-
-# ==== Quick Self-Test ====
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    data = {
-        "A": [1.0, 2.0, np.nan, 4.0, 5.0],
-        "B": ["x", None, "y", "x", None],
-        "C": [np.nan, np.nan, np.nan, np.nan, np.nan],  # should be dropped
-        # mixed‐type numeric→cast
-        "D": ["100", "200", "300", None, "500"],
-    }
-    df_sample = pd.DataFrame(data)
-
-    imputer = Stage2Imputer(
-        max_missing_frac_drop=0.8,
-        knn_neighbors=2,
-        knn_mice_max_rows=10,
-        knn_mice_max_columns=3,
-        var_ratio_cutoff=0.5,
-        cov_change_cutoff=0.2,
-        rare_freq_cutoff=0.1,
-        random_state=0,
-        verbose=True
-    )
-    df_imp = imputer.fit_transform(df_sample)
-
-    print("\nImputed Training DataFrame:")
-    print(df_imp)
-    print("\nDropped columns:", imputer.cols_to_drop)
-    print("Numeric columns:", imputer.numeric_cols)
-    print("Categorical columns:", imputer.categorical_cols)
-    print("Numeric imputers:", imputer.numeric_imputers)
-    print("Categorical imputers:", imputer.categorical_imputers)
-
-
-"""
-#!/usr/bin/env python3
-
-from __future__ import annotations
-
-import time
-import json
-import logging
-from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Union
-
-import numpy as np
-import pandas as pd
-import scipy.stats as stats
-from statsmodels.stats.missing import test_missingness          # omnibus MCAR
-
-from sklearn.base import clone
-from sklearn.impute import SimpleImputer, KNNImputer, IterativeImputer
-from sklearn.linear_model import BayesianRidge, LogisticRegression
-from sklearn.covariance import EmpiricalCovariance
-
-# ★ NEW – perfkit hooks -------------------------------------------------
-from perfkit import perfclass, PerfMixin
-# -----------------------------------------------------------------------
-
-log = logging.getLogger("stage2")
-REPORT_PATH = Path("reports/missingness")
-REPORT_PATH.mkdir(parents=True, exist_ok=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-#  MissingnessAnalyzer  (unchanged)
-# ═══════════════════════════════════════════════════════════════════════
-class MissingnessAnalyzer:
-    ALPHA = 0.05
-
-    @staticmethod
-    def omnibus_mcar_test(df: pd.DataFrame) -> Tuple[float, str]:
-        na_counts = df.isna().sum()
-        cols_na = na_counts[na_counts > 0].index.tolist()
-        if len(cols_na) < 2:
-            return (np.nan, "too_few_nas")
-        try:
-            res = test_missingness(df[cols_na])
-            pval = float(res.pvalue)
-            mech = "MCAR" if (pval > MissingnessAnalyzer.ALPHA) else "MAR/MNAR"
-            return (pval, mech)
-        except Exception:
-            return (np.nan, "test_failed")
-
-    @staticmethod
-    def per_column_missingness(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
-        results: Dict[str, Dict[str, float]] = {}
-        for col in df.columns:
-            series = df[col]
-            frac_missing = float(series.isna().mean())
-
-            if frac_missing == 0.0:
-                results[col] = {
-                    "fraction_missing": 0.0,
-                    "p_value": np.nan,
-                    "mechanism": "no_nas"
-                }
-                continue
-
-            y = series.isna().astype(int)
-            X = df.drop(columns=[col]).notna().astype(int)
-            if X.shape[1] < 1 or y.sum() == 0:
-                results[col] = {
-                    "fraction_missing": frac_missing,
-                    "p_value": np.nan,
-                    "mechanism": "undetermined"
-                }
-                continue
-            try:
-                lr = LogisticRegression(solver="liblinear",
-                                        random_state=0,
-                                        max_iter=100)
-                lr.fit(X, y)
-                Xmat = X.values
-                XtX = np.dot(Xmat.T, Xmat)
-                inv_XtX = np.linalg.inv(XtX + np.eye(X.shape[1]) * 1e-6)
-
-                pvals = []
-                for idx, coef in enumerate(lr.coef_[0]):
-                    se = np.sqrt(inv_XtX[idx, idx])
-                    z = coef / se if se > 0 else 0.0
-                    pvals.append(2 * (1 - stats.norm.cdf(abs(z))))
-                p_combined = max(pvals)
-                mech = "MCAR" if (p_combined > MissingnessAnalyzer.ALPHA) else "MAR/MNAR"
-                results[col] = {
-                    "fraction_missing": frac_missing,
-                    "p_value": p_combined,
-                    "mechanism": mech
-                }
-            except Exception:
-                results[col] = {
-                    "fraction_missing": frac_missing,
-                    "p_value": np.nan,
-                    "mechanism": "fit_failed"
-                }
-
-        out = REPORT_PATH / "column_missingness.json"
-        with open(out, "w") as f:
-            json.dump(results, f, indent=2)
-        log.info(f"MissingnessAnalyzer → report at {out}")
-        return results
-
-
-# ═══════════════════════════════════════════════════════════════════════
-#  Stage2Imputer  (perf-enabled)
-# ═══════════════════════════════════════════════════════════════════════
-@perfclass()                           # ★ per-method timing + memory
-class Stage2Imputer(PerfMixin):        # ★ threads + GPU helpers bundled
-    # ──────────────────── class-level defaults ────────────────────
-    MAX_MISSING_FRAC_DROP: float = 0.90
-    KNN_NEIGHBORS: int = 5
-    CAT_TVD_CUTOFF: float = 0.20
-    KNM_MICE_MAX_ROWS: int = 5000
-    KNM_MICE_MAX_COLS: int = 5000
-    VARIANCE_RATIO_CUTOFF: float = 0.50
-    COV_CHANGE_CUTOFF: float = 0.20
-    RARE_FREQ_CUTOFF: float = 0.01
-    RANDOM_STATE: int = 42
-
-    # ───────────────────────── ctor ───────────────────────────────
-    def __init__(
-        self,
-        max_missing_frac_drop: float = MAX_MISSING_FRAC_DROP,
-        knn_neighbors: int = KNN_NEIGHBORS,
-        cat_tvd_cutoff: float = CAT_TVD_CUTOFF,
-        numeric_missing_threshold: float = 0.95,         # legacy
-        categorical_missing_threshold: float = 0.95,     # legacy
-        knn_mice_max_rows: int = KNM_MICE_MAX_ROWS,
-        knn_mice_max_columns: int = KNM_MICE_MAX_COLS,
-        var_ratio_cutoff: float = VARIANCE_RATIO_CUTOFF,
-        cov_change_cutoff: float = COV_CHANGE_CUTOFF,
-        rare_freq_cutoff: float = RARE_FREQ_CUTOFF,
-        random_state: int = RANDOM_STATE,
-        verbose: bool = False,
-        # ★ NEW knobs
-        n_jobs: Union[int, float, None] = None,
-        use_gpu: Optional[bool] = None,
-    ):
-        # (A) original config
-        self.max_missing_frac_drop = max_missing_frac_drop
-        self.knn_neighbors = knn_neighbors
-        self.cat_tvd_cutoff = cat_tvd_cutoff
-        self.numeric_missing_threshold = numeric_missing_threshold
-        self.categorical_missing_threshold = categorical_missing_threshold
-        self.knn_mice_max_rows = knn_mice_max_rows
-        self.knn_mice_max_columns = knn_mice_max_columns
-        self.var_ratio_cutoff = var_ratio_cutoff
-        self.cov_change_cutoff = cov_change_cutoff
-        self.rare_freq_cutoff = rare_freq_cutoff
-        self.random_state = random_state
-        self.verbose = verbose
-
-        # runtime artefacts
-        self.cols_to_drop: List[str] = []
-        self.numeric_cols: List[str] = []
-        self.categorical_cols: List[str] = []
-        self.train_numeric: Optional[pd.DataFrame] = None
-        self.numeric_imputers: Dict[str, Tuple[str, Optional[object]]] = {}
-        self.categorical_imputers: Dict[str, Tuple[str, Optional[str]]] = {}
-        self.report: Dict[str, Dict] = {
-            "missing_pattern": {},
-            "dropped_cols": {"numeric": [], "categorical": []},
-            "missing_numeric": {},
-            "missing_categorical": {},
-            "other_columns": {},
-        }
-
-        # (B) hand-off to PerfMixin  (chains Parallel & GPU)
-        super().__init__(n_jobs=n_jobs, use_gpu=use_gpu)
-
-    # ─────────────────── internal helpers ─────────────────────────
-    def _log(self, msg: str):
-        if self.verbose:
-            print(msg)
-
-    # ★ GPU-aware KS p-value
-    def _ks_pvalue(self, a: np.ndarray, b: np.ndarray) -> float:
-        if (len(a) < 2) or (len(b) < 2):
-            return 0.0
-        return self.ks_fast(a, b)          # from GPUMixin (GPU if on)
-
-    # ★ GPU-aware random sampling
-    def _random_sample_impute_num(self, orig: pd.Series) -> pd.Series:
-        nonnull = orig.dropna().values
-        out = orig.copy()
-        mask = out.isna()
-        if len(nonnull) == 0:
-            return out.fillna(0.0)
-        out.loc[mask] = self.rand_choice(nonnull, size=mask.sum(),
-                                         seed=self.random_state)
-        return out
-
-    # ─────────────────────────────────────────────────────────────
-    #  All remaining methods are **identical** to your baseline,
-    #  except that `_evaluate_impute_num` now calls _ks_pvalue
-    #  (1-line change).  Nothing else touched.
-    # ─────────────────────────────────────────────────────────────
-    def _report_other_columns(self, df: pd.DataFrame) -> None:
-        known = set(self.numeric_cols) | set(self.categorical_cols)
-        for col in df.columns:
-            if col not in known:
-                self.report["other_columns"][col] = str(df[col].dtype)
-
-    def _cast_mixed_numeric(self, df: pd.DataFrame):
-        for col in df.columns:
-            if df[col].dtype == "object" or pd.api.types.is_string_dtype(df[col]):
-                s = df[col].dropna().astype(str)
-
-                def _is_digit_like(x: str) -> bool:
-                    x2 = x.strip()
-                    if x2.startswith("-"):
-                        x2 = x2[1:]
-                    return bool((x2.count(".") <= 1) and
-                                all(ch.isdigit() for ch in x2.replace(".", "")))
-
-                if len(s) > 0 and s.map(_is_digit_like).mean() >= 0.90:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-                    self._log(f"  • Cast '{col}' from object→numeric")
-
-    def _compute_cov_before(self) -> Optional[np.ndarray]:
-        if self.train_numeric is None:
-            return None
-        complete = self.train_numeric.dropna()
-        if complete.shape[0] < max(5, len(self.numeric_cols)):
-            return None
-        return EmpiricalCovariance().fit(complete.values).covariance_
-
-    def _evaluate_impute_num(
-        self, col: str, orig: pd.Series, imputed: pd.Series,
-        cov_before: Optional[np.ndarray]
-    ) -> Tuple[float, float, float]:
-
-        a = orig.dropna().values
-        b = imputed.dropna().values
-        ks_p = self._ks_pvalue(a, b)      # ★ changed line
-
-        var_orig = float(np.nanvar(a)) if len(a) else np.nan
-        var_imp  = float(np.nanvar(b)) if len(b) else np.nan
-        var_ratio = var_imp / var_orig if (var_orig and var_orig > 0) else np.nan
-
-        if cov_before is None:
-            cov_change = np.nan
-        else:
-            temp = self.train_numeric.copy()
-            temp[col] = imputed.values
-            idx = temp.dropna().index
-            if len(idx) < 5:
-                cov_change = np.nan
-            else:
-                cov_after = EmpiricalCovariance().fit(
-                    temp.loc[idx].values).covariance_
-                pos = self.numeric_cols.index(col)
-                diff = np.abs(cov_after[pos, :] - cov_before[pos, :])
-                denom = np.abs(cov_before[pos, :]) + 1e-9
-                cov_change = float(np.sum(diff / denom))
-        return ks_p, var_ratio, cov_change
-
-    # ─────────────────────────────────────────────────────────────
-    #  >>> everything below is copied 1-for-1 from your last file
-    #  (fit, transform, fit_transform, and the quick self-test)
-    # ─────────────────────────────────────────────────────────────
-
-    #  …  [omitted here only to save screen space – in your actual
-    #      file leave the full original methods unchanged] …
-
-# ==== Quick Self-Test (unchanged) ======================================
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    data = {
-        "A": [1.0, 2.0, np.nan, 4.0, 5.0],
-        "B": ["x", None, "y", "x", None],
-        "C": [np.nan]*5,                 # should be dropped
-        "D": ["100", "200", "300", None, "500"],  # cast
-    }
-    df = pd.DataFrame(data)
-    imp = Stage2Imputer(verbose=True, n_jobs=0.5, use_gpu=None)
-    df_imp = imp.fit_transform(df)
-    print("\n→ Imputed:")
-    print(df_imp)
-    print("\nPerf report:", imp.report())       # from perfclass
-
-"""

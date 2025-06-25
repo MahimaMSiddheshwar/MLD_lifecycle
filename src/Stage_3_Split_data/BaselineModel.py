@@ -32,21 +32,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 class AutoBaseline:
-    """
-    Automatically fit & evaluate several common baselines on (train, test).
-
-    For regression targets (float dtype):
-      – 'mean_regressor'
-      – 'median_regressor'
-
-    For classification targets (non‐float dtype OR discrete integer):
-      – 'most_frequent'
-      – 'stratified'
-      – 'uniform'
-
-    After fitting each baseline, it computes standard metrics and returns a dict.
-    """
-
     def __init__(self, target: str, verbose: bool = True):
         self.target = target
         self.verbose = verbose
@@ -79,9 +64,6 @@ class AutoBaseline:
         y_train: pd.Series,
         y_test: pd.Series,
     ):
-        """
-        Fit DummyRegressor strategies: 'mean' and 'median', then evaluate.
-        """
         X_train = train_df.drop(columns=[self.target])
         X_test = test_df.drop(columns=[self.target])
 
@@ -124,9 +106,6 @@ class AutoBaseline:
         y_train: pd.Series,
         y_test: pd.Series,
     ):
-        """
-        Fit DummyClassifier strategies: 'most_frequent', 'stratified', 'uniform', then evaluate.
-        """
         X_train = train_df.drop(columns=[self.target])
         X_test = test_df.drop(columns=[self.target])
 
@@ -142,6 +121,7 @@ class AutoBaseline:
             "precision": float(precision_score(y_test, y_pred_mf, zero_division=0)),
             "recall": float(recall_score(y_test, y_pred_mf, zero_division=0))
         }
+
         self.results["most_frequent"] = metrics_mf
         if self.verbose:
             print(f"[most_frequent] Acc={metrics_mf['accuracy']:.4f}, "
@@ -180,20 +160,3 @@ class AutoBaseline:
         if self.verbose:
             print(f"[uniform] Acc={metrics_unif['accuracy']:.4f}, "
                   f"F1={metrics_unif['f1']:.4f}, Prec={metrics_unif['precision']:.4f}, Rec={metrics_unif['recall']:.4f}")
-
-
-"""
-import pandas as pd
-from auto_baseline import AutoBaseline
-
-# Suppose you already have train_df and test_df:
-# train_df = pd.read_parquet("data/splits/train.parquet")
-# test_df  = pd.read_parquet("data/splits/test.parquet")
-# And your target column is "price" (a float column).
-
-baseline = AutoBaseline(target="price", verbose=True)
-regression_results = baseline.run(train_df, test_df)
-
-baseline = AutoBaseline(target="is_churn", verbose=True)
-classification_results = baseline.run(train_df, test_df)
-"""

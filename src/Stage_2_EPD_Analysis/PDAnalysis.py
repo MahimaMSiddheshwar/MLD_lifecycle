@@ -38,7 +38,7 @@ from scipy.stats import anderson
 from statsmodels.distributions.empirical_distribution import ECDF
 
 
-REPORT_DIR = None  # set in main()
+REPORT_DIR = "reports/probalistic"  # set in main()
 
 
 class ProbabilisticAnalysis:
