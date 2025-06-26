@@ -14,6 +14,7 @@ from sklearn.base import clone
 from sklearn.impute import SimpleImputer, KNNImputer, IterativeImputer
 from sklearn.linear_model import BayesianRidge, LogisticRegression
 from sklearn.covariance import EmpiricalCovariance
+from joblib import Parallel, delayed
 
 log = logging.getLogger("stage4")
 REPORT_PATH = Path("reports/missingness")
@@ -171,6 +172,7 @@ class MissingImputer(PerfMixin):
         verbose: bool = False,
         n_jobs: Union[int, float, None] = None,
         use_gpu: Optional[bool] = None,
+        model_path: Union[str, Path] = DEFAULT_MODEL_PATH,
     ):
         # Configuration
         self.max_missing_frac_drop = max_missing_frac_drop
@@ -183,7 +185,7 @@ class MissingImputer(PerfMixin):
         self.rare_freq_cutoff = rare_freq_cutoff
         self.random_state = random_state
         self.verbose = verbose
-
+        self.model_path = Path(model_path)
         # To be populated in fit()
         self.cols_to_drop: List[str] = []
         self.numeric_cols: List[str] = []
@@ -220,21 +222,25 @@ class MissingImputer(PerfMixin):
             "cols_to_drop": self.cols_to_drop,
             "numeric_imputers": self.numeric_imputers,
             "categorical_imputers": self.categorical_imputers,
+            "shared_block_imputers": getattr(self, "shared_block_imputers", {}),
             "report": self.report,
             "random_state": self.random_state,
         }
         with open(filepath, "wb") as f:
             pickle.dump(state, f)
-        self._log(f"✔ Saved MissingImputer model to {filepath}")
+        self._log(
+            f"✔ Saved MissingImputer model to {Path(filepath).resolve()}")
 
     def load(self, filepath: Union[str, Path]):
         with open(filepath, "rb") as f:
             state = pickle.load(f)
+
         self.numeric_cols = state["numeric_cols"]
         self.categorical_cols = state["categorical_cols"]
         self.cols_to_drop = state["cols_to_drop"]
         self.numeric_imputers = state["numeric_imputers"]
         self.categorical_imputers = state["categorical_imputers"]
+        self.shared_block_imputers = state.get("shared_block_imputers", {})
         self.report = state["report"]
         self.random_state = state.get("random_state", 42)
 
@@ -297,14 +303,14 @@ class MissingImputer(PerfMixin):
         Impute numeric by drawing random samples (with replacement) from non‐missing values.
         """
         nonnull = orig.dropna().values
-        if len(nonnull) == 0:
-            return out.fillna(0.0)
         out = orig.copy()
         mask = out.isna()
         if len(nonnull) == 0:
             return out.fillna(0.0)
         rng = np.random.RandomState(self.random_state)
-        out.loc[mask] = rng.choice(nonnull, size=mask.sum(), replace=True)
+        out.loc[mask] = np.random.default_rng(self.random_state).choice(
+            nonnull, size=mask.sum(), replace=True)
+
         return out
 
     def _evaluate_impute_num(
@@ -367,6 +373,174 @@ class MissingImputer(PerfMixin):
             or None
         )
 
+    def _evaluate_single_numeric_column(
+            self,
+            df0: pd.DataFrame,
+            col: str,
+            knn_block: Optional[pd.DataFrame] = None,
+            knn_imp: Optional[KNNImputer] = None,
+            mice_block: Optional[pd.DataFrame] = None,
+            mice_imp: Optional[IterativeImputer] = None,
+            cov_before: Optional[np.ndarray] = None,
+    ):
+        orig = df0[col]
+        n_missing = int(orig.isna().sum())
+        if n_missing == 0:
+            self._log(f"  • Numeric '{col}': no missing → skip")
+            self.report["missing_numeric"][col] = {
+                "chosen": "none", "note": "no missing"}
+            self.numeric_imputers[col] = ("none", None)
+            return
+
+        self._log(
+            f"  • Numeric '{col}': {n_missing} missing, evaluating imputers")
+        orig_series = orig.copy()
+        metrics: Dict[str, Tuple[float, float, float, float]] = {}
+        candidates: Dict[str, pd.Series] = {}
+        imputers: Dict[str, Optional[object]] = {}
+
+        # --- Mean Imputer ---
+        try:
+            start = time.time()
+            imp = SimpleImputer(strategy="mean")
+            arr = pd.Series(
+                imp.fit_transform(
+                    orig_series.values.reshape(-1, 1)).flatten(),
+                index=orig_series.index
+            )
+            ks_p, vr, cc = self._evaluate_impute_num(
+                col, orig_series, arr, cov_before)
+            runtime = time.time() - start
+            metrics["mean"] = (ks_p, vr, cc, runtime)
+            candidates["mean"] = arr
+            imputers["mean"] = clone(imp)
+            self._log(
+                f"    • mean: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+        except Exception:
+            pass
+        if knn_block is not None:
+            try:
+                start = time.time()
+                arr = knn_block[col]
+                ks_p, vr, cc = self._evaluate_impute_num(
+                    col, orig_series, arr, cov_before)
+                runtime = time.time() - start
+                metrics["knn"] = (ks_p, vr, cc, runtime)
+                candidates["knn"] = arr
+                imputers["knn"] = clone(knn_imp)
+                self._log(
+                    f"    • knn (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+            except Exception:
+                pass
+
+        # --- Median Imputer ---
+        try:
+            start = time.time()
+            imp = SimpleImputer(strategy="median")
+            arr = pd.Series(
+                imp.fit_transform(
+                    orig_series.values.reshape(-1, 1)).flatten(),
+                index=orig_series.index
+            )
+            ks_p, vr, cc = self._evaluate_impute_num(
+                col, orig_series, arr, cov_before)
+            runtime = time.time() - start
+            metrics["median"] = (ks_p, vr, cc, runtime)
+            candidates["median"] = arr
+            imputers["median"] = clone(imp)
+            self._log(
+                f"    • median: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+        except Exception:
+            pass
+
+        # --- Random‐sample Imputer ---
+        try:
+            start = time.time()
+            arr = self._random_sample_impute_num(orig_series)
+            ks_p, vr, cc = self._evaluate_impute_num(
+                col, orig_series, arr, cov_before)
+            runtime = time.time() - start
+            metrics["random_sample"] = (ks_p, vr, cc, runtime)
+            candidates["random_sample"] = arr
+            imputers["random_sample"] = None
+            self._log(
+                f"    • random_sample: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+        except Exception:
+            pass
+
+        # --- KNN Imputer ---
+        if knn_block is not None:
+            try:
+                start = time.time()
+                arr = knn_block[col]
+                ks_p, vr, cc = self._evaluate_impute_num(
+                    col, orig_series, arr, cov_before)
+                runtime = time.time() - start
+                metrics["knn"] = (ks_p, vr, cc, runtime)
+                candidates["knn"] = arr
+                imputers["knn"] = clone(knn_imp)
+                self._log(
+                    f"    • knn (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+            except Exception:
+                pass
+
+        # --- MICE Imputer ---
+        if mice_block is not None:
+            try:
+                start = time.time()
+                arr = mice_block[col]
+                ks_p, vr, cc = self._evaluate_impute_num(
+                    col, orig_series, arr, cov_before)
+                runtime = time.time() - start
+                metrics["mice"] = (ks_p, vr, cc, runtime)
+                candidates["mice"] = arr
+                imputers["mice"] = clone(mice_imp)
+                self._log(
+                    f"    • mice (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
+            except Exception:
+                pass
+
+        # --- Choose Best Candidate ---
+        best_method: Optional[str] = None
+        # (ks, vr, –cov_ch)
+        best_score: Tuple[float, float, float] = (-1.0, -1.0, np.inf)
+        for method, (ks_p, vr, cc, rt) in metrics.items():
+            # Check QC: var_ratio ≥ var_ratio_cutoff, cov_change ≤ cov_change_cutoff (or nan)
+            if (not np.isnan(vr) and vr < self.var_ratio_cutoff):
+                continue
+            if (not np.isnan(cc) and cc > self.cov_change_cutoff):
+                continue
+            score = (ks_p, vr, -cc)
+            if score > best_score:
+                best_score = score
+                best_method = method
+
+        if best_method is None:
+            # Fallback → mean
+            arr = orig_series.fillna(orig_series.mean())
+            ks_p, vr, cc = self._evaluate_impute_num(
+                col, orig_series, arr, cov_before)
+            best_method = "fallback_mean"
+            imp_fb = SimpleImputer(strategy="mean")
+            imp_fb.fit(orig_series.values.reshape(-1, 1))
+            imputers["fallback_mean"] = clone(imp_fb)
+            candidates["fallback_mean"] = arr
+            best_score = (ks_p, vr, cc)
+            self._log(
+                f"    • Fallback to mean: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}")
+
+        # Record choice and apply to df0
+        self.report["missing_numeric"][col] = {
+            "chosen": best_method,
+            "metrics": best_score
+        }
+        self._log(
+            f"    → Selected '{best_method}' for '{col}' with metrics={best_score}")
+
+        df0[col] = candidates[best_method].values
+        self.numeric_imputers[col] = (
+            best_method, imputers.get(best_method))
+
     def fit(
         self,
         train_df: pd.DataFrame,
@@ -427,8 +601,10 @@ class MissingImputer(PerfMixin):
             c for c in df0.columns if c not in self.numeric_cols]
 
         # 4) Keep a copy of numeric block for covariance computations
-        self.train_numeric = df0[self.numeric_cols].copy(
-        ) if self.numeric_cols else None
+        if not self.numeric_cols:
+            self.train_numeric = None
+        else:
+            self.train_numeric = df0[self.numeric_cols].copy()
 
         # 5) Compute covariance before imputation (on complete cases)
         cov_before = self._compute_cov_before()
@@ -438,9 +614,10 @@ class MissingImputer(PerfMixin):
         knn_imp = None
         mice_imp = None
 
+        n_rows, n_num_cols = df0.shape[0], len(self.numeric_cols)
         can_use_knn_mice = (
-            df0.shape[0] <= self.knn_mice_max_rows
-            and len(self.numeric_cols) <= self.knn_mice_max_columns
+            n_rows <= self.knn_mice_max_rows
+            and n_num_cols <= self.knn_mice_max_columns
         )
 
         if can_use_knn_mice and self.train_numeric is not None:
@@ -476,166 +653,11 @@ class MissingImputer(PerfMixin):
             self._log(
                 f"    • knn/mice skipped (dataset too large: rows={n_rows}, num_cols={n_num_cols})")
         # 6) Impute numeric columns
-        for col in self.numeric_cols:
-            orig = df0[col]
-            n_missing = int(orig.isna().sum())
-            if n_missing == 0:
-                self._log(f"  • Numeric '{col}': no missing → skip")
-                self.report["missing_numeric"][col] = {
-                    "chosen": "none", "note": "no missing"}
-                self.numeric_imputers[col] = ("none", None)
-                continue
-
-            self._log(
-                f"  • Numeric '{col}': {n_missing} missing, evaluating imputers")
-            orig_series = orig.copy()
-            metrics: Dict[str, Tuple[float, float, float, float]] = {}
-            candidates: Dict[str, pd.Series] = {}
-            imputers: Dict[str, Optional[object]] = {}
-
-            # --- Mean Imputer ---
-            try:
-                start = time.time()
-                imp = SimpleImputer(strategy="mean")
-                arr = pd.Series(
-                    imp.fit_transform(
-                        orig_series.values.reshape(-1, 1)).flatten(),
-                    index=orig_series.index
-                )
-                ks_p, vr, cc = self._evaluate_impute_num(
-                    col, orig_series, arr, cov_before)
-                runtime = time.time() - start
-                metrics["mean"] = (ks_p, vr, cc, runtime)
-                candidates["mean"] = arr
-                imputers["mean"] = clone(imp)
-                self._log(
-                    f"    • mean: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
-            except Exception:
-                pass
-            if knn_block is not None:
-                try:
-                    start = time.time()
-                    arr = knn_block[col]
-                    ks_p, vr, cc = self._evaluate_impute_num(
-                        col, orig_series, arr, cov_before)
-                    runtime = time.time() - start
-                    metrics["knn"] = (ks_p, vr, cc, runtime)
-                    candidates["knn"] = arr
-                    imputers["knn"] = clone(knn_imp)
-                    self._log(
-                        f"    • knn (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
-                except Exception:
-                    pass
-
-            # --- Median Imputer ---
-            try:
-                start = time.time()
-                imp = SimpleImputer(strategy="median")
-                arr = pd.Series(
-                    imp.fit_transform(
-                        orig_series.values.reshape(-1, 1)).flatten(),
-                    index=orig_series.index
-                )
-                ks_p, vr, cc = self._evaluate_impute_num(
-                    col, orig_series, arr, cov_before)
-                runtime = time.time() - start
-                metrics["median"] = (ks_p, vr, cc, runtime)
-                candidates["median"] = arr
-                imputers["median"] = clone(imp)
-                self._log(
-                    f"    • median: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
-            except Exception:
-                pass
-
-            # --- Random‐sample Imputer ---
-            try:
-                start = time.time()
-                arr = self._random_sample_impute_num(orig_series)
-                ks_p, vr, cc = self._evaluate_impute_num(
-                    col, orig_series, arr, cov_before)
-                runtime = time.time() - start
-                metrics["random_sample"] = (ks_p, vr, cc, runtime)
-                candidates["random_sample"] = arr
-                imputers["random_sample"] = None
-                self._log(
-                    f"    • random_sample: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
-            except Exception:
-                pass
-
-            # Only if small enough, evaluate KNN and MICE
-            n_rows, n_num_cols = df0.shape[0], len(self.numeric_cols)
-            # --- KNN Imputer ---
-            if knn_block is not None:
-                try:
-                    start = time.time()
-                    arr = knn_block[col]
-                    ks_p, vr, cc = self._evaluate_impute_num(
-                        col, orig_series, arr, cov_before)
-                    runtime = time.time() - start
-                    metrics["knn"] = (ks_p, vr, cc, runtime)
-                    candidates["knn"] = arr
-                    imputers["knn"] = clone(knn_imp)
-                    self._log(
-                        f"    • knn (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
-                except Exception:
-                    pass
-
-            # --- MICE Imputer ---
-            if mice_block is not None:
-                try:
-                    start = time.time()
-                    arr = mice_block[col]
-                    ks_p, vr, cc = self._evaluate_impute_num(
-                        col, orig_series, arr, cov_before)
-                    runtime = time.time() - start
-                    metrics["mice"] = (ks_p, vr, cc, runtime)
-                    candidates["mice"] = arr
-                    imputers["mice"] = clone(mice_imp)
-                    self._log(
-                        f"    • mice (precomputed): ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}, time={runtime:.2f}s")
-                except Exception:
-                    pass
-
-            # --- Choose Best Candidate ---
-            best_method: Optional[str] = None
-            # (ks, vr, –cov_ch)
-            best_score: Tuple[float, float, float] = (-1.0, -1.0, np.inf)
-            for method, (ks_p, vr, cc, rt) in metrics.items():
-                # Check QC: var_ratio ≥ var_ratio_cutoff, cov_change ≤ cov_change_cutoff (or nan)
-                if (not np.isnan(vr) and vr < self.var_ratio_cutoff):
-                    continue
-                if (not np.isnan(cc) and cc > self.cov_change_cutoff):
-                    continue
-                score = (ks_p, vr, -cc)
-                if score > best_score:
-                    best_score = score
-                    best_method = method
-
-            if best_method is None:
-                # Fallback → mean
-                arr = orig_series.fillna(orig_series.mean())
-                ks_p, vr, cc = self._evaluate_impute_num(
-                    col, orig_series, arr, cov_before)
-                best_method = "fallback_mean"
-                imp_fb = SimpleImputer(strategy="mean")
-                imp_fb.fit(orig_series.values.reshape(-1, 1))
-                imputers["fallback_mean"] = clone(imp_fb)
-                candidates["fallback_mean"] = arr
-                best_score = (ks_p, vr, cc)
-                self._log(
-                    f"    • Fallback to mean: ks={ks_p:.3f}, vr={vr:.3f}, cov_ch={cc:.3f}")
-
-            # Record choice and apply to df0
-            self.report["missing_numeric"][col] = {
-                "chosen": best_method,
-                "metrics": best_score
-            }
-            self._log(
-                f"    → Selected '{best_method}' for '{col}' with metrics={best_score}")
-
-            df0[col] = candidates[best_method].values
-            self.numeric_imputers[col] = (
-                best_method, imputers.get(best_method))
+        Parallel(n_jobs=self.n_jobs)(
+            delayed(self._evaluate_single_numeric_column)(
+                df0, col, knn_block, knn_imp, mice_block, mice_imp, cov_before)
+            for col in self.numeric_cols
+        )
 
         # 7) Drop categorical columns with too many missing
         for col in list(self.categorical_cols):
@@ -653,8 +675,9 @@ class MissingImputer(PerfMixin):
             freq = df0[col].value_counts(normalize=True)
             rare_levels = set(freq[freq < self.rare_freq_cutoff].index)
             if rare_levels:
-                df0[col] = df0[col].apply(
-                    lambda x: "__RARE__" if x in rare_levels else x).astype("category")
+                df0[col] = df0[col].where(~df0[col].isin(
+                    rare_levels), "__RARE__").astype("category")
+
                 self._log(
                     f"  • Categorical '{col}': collapsed {len(rare_levels)} rare levels → '__RARE__'")
 
@@ -677,9 +700,10 @@ class MissingImputer(PerfMixin):
             else:
                 mode_val = "__MISSING__"
             arr_mode = orig.fillna(mode_val)
+            common_levels = orig.dropna().unique()
             tvd_mode = float(np.sum(
-                np.abs(orig.dropna().value_counts(normalize=True)
-                       - arr_mode.value_counts(normalize=True)).loc[orig.dropna().unique()]
+                np.abs(orig.dropna().value_counts(normalize=True).reindex(common_levels, fill_value=0)
+                       - arr_mode.value_counts(normalize=True).reindex(common_levels, fill_value=0))
             ))
 
             # Constant "__MISSING__"
@@ -726,19 +750,22 @@ class MissingImputer(PerfMixin):
                 self.categorical_imputers[col] = ("random", None)
 
         # Final: store fully imputed training dataframe
+        self.shared_block_imputers = {
+            "knn": knn_imp,
+            "mice": mice_imp,
+        }
         self.train_imputed_ = df0.copy()
         self._log("MissingImputer → fit() completed.")
-        self.save(DEFAULT_MODEL_PATH)
+        self.save(self.model_path)
         return self
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Apply fitted imputers to a new DataFrame (e.g. validation/test):
-         - Drop columns that were dropped in fit()
-         - For numeric cols: apply the chosen method & imputer
-         - For categorical cols: apply the chosen strategy & value
+        - Drop columns that were dropped in fit()
+        - For numeric cols: apply the chosen method & imputer
+        - For categorical cols: apply the chosen strategy & value
         """
-        df1 = df.copy()
         if not hasattr(self, "numeric_imputers") or not self.numeric_imputers:
             if self.model_path.exists():
                 self.load(self.model_path)
@@ -747,11 +774,38 @@ class MissingImputer(PerfMixin):
                 raise RuntimeError(
                     "No fitted state found. Please run `.fit()` before calling `.transform()`.")
 
+        df1 = df.copy()
+
         # 1) Drop the same columns
         df1 = df1.drop(
             columns=[c for c in self.cols_to_drop if c in df1.columns], errors="ignore")
 
-        # 2) Numeric transformation
+        # 2) Precompute KNN/MICE blocks ONCE
+        knn_imputed_block, mice_imputed_block = None, None
+        valid_num_cols = [c for c in self.numeric_cols if c in df1.columns]
+
+        methods_used = {method for method, _ in self.numeric_imputers.values()}
+        if "knn" in methods_used:
+            imp = self.shared_block_imputers.get("knn")
+            if imp and valid_num_cols:
+                block = df1[valid_num_cols]
+                knn_imputed_block = pd.DataFrame(
+                    imp.transform(block),
+                    columns=valid_num_cols,
+                    index=block.index
+                )
+
+        if "mice" in methods_used:
+            imp = self.shared_block_imputers.get("mice")
+            if imp and valid_num_cols:
+                block = df1[valid_num_cols]
+                mice_imputed_block = pd.DataFrame(
+                    imp.transform(block),
+                    columns=valid_num_cols,
+                    index=block.index
+                )
+
+        # 3) Numeric column-wise imputation
         for col, (method, imputer_obj) in self.numeric_imputers.items():
             if col not in df1.columns:
                 continue
@@ -759,62 +813,27 @@ class MissingImputer(PerfMixin):
             if method == "none":
                 continue
             elif method in ["mean", "median", "fallback_mean"]:
-                # SimpleImputer→single column
                 df1[col] = imputer_obj.transform(
                     series.values.reshape(-1, 1)).flatten()
-            elif method == "knn" and imputer_obj is not None:
-                # Must apply to whole numeric block at once
-                num_block = df1[self.numeric_cols].copy()
-                num_block_imp = pd.DataFrame(
-                    imputer_obj.transform(num_block.values),
-                    columns=self.numeric_cols,
-                    index=num_block.index
-                )
-                valid_cols = [
-                    col for col in self.numeric_cols if col in df1.columns]
-                num_block_imp = pd.DataFrame(
-                    imputer_obj.transform(df1[valid_cols]),
-                    columns=valid_cols,
-                    index=df1.index
-                )
-                df1[valid_cols] = num_block_imp
-
-                break  # as all numeric columns are replaced already
-            elif method == "mice" and imputer_obj is not None:
-                num_block = df1[self.numeric_cols].copy()
-                num_block_imp = pd.DataFrame(
-                    imputer_obj.transform(num_block.values),
-                    columns=self.numeric_cols,
-                    index=num_block.index
-                )
-                valid_cols = [
-                    col for col in self.numeric_cols if col in df1.columns]
-                num_block_imp = pd.DataFrame(
-                    imputer_obj.transform(df1[valid_cols]),
-                    columns=valid_cols,
-                    index=df1.index
-                )
-                df1[valid_cols] = num_block_imp
-                break
+            elif method == "knn" and knn_imputed_block is not None:
+                df1[col] = knn_imputed_block[col]
+            elif method == "mice" and mice_imputed_block is not None:
+                df1[col] = mice_imputed_block[col]
             elif method == "random_sample":
                 df1[col] = self._random_sample_impute_num(series)
-            else:
-                # Should not happen
-                pass
 
-        # 3) Categorical transformation
+        # 4) Categorical column-wise imputation
         for col, (strategy, val) in self.categorical_imputers.items():
             if col not in df1.columns:
                 continue
             series = df1[col].astype(object)
             if strategy == "none":
                 continue
-            if strategy == "mode":
+            elif strategy == "mode":
                 df1[col] = series.fillna(val).astype(object)
             elif strategy == "constant":
-                df1[col] = series.fillna(val).astype(
-                    object)  # val should be "__MISSING__"
-            else:  # random
+                df1[col] = series.fillna(val).astype(object)
+            elif strategy == "random":
                 nonnull_vals = series.dropna().values
                 mask = series.isna()
                 if len(nonnull_vals) > 0:
@@ -828,6 +847,5 @@ class MissingImputer(PerfMixin):
         return df1
 
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Convenience: run fit(df), then transform(df)."""
         self.fit(df)
-        return self.transform(df)
+        return self.train_imputed_

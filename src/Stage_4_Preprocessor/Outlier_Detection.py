@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
-"""
-stage3_outlier_detection.py
-
-– Univariate outliers: IQR, Z-score, Modified Z, Tukey (2×IQR), 1st/99th percentile
-– Multivariate outliers: Mahalanobis on scaled data (with MinCovDet fallback),
-  LocalOutlierFactor, and IsolationForest as last resort
-– Vote-based: if a row is flagged by ≥ outlier_threshold methods, it is a “real outlier”
-– fit/fit_transform: detect + (drop or winsorize) automatically, with full reporting
-– transform(): flag outliers (no removal) on new data
-"""
 import pickle
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import numpy as np
 import pandas as pd
 from scipy.stats import chi2
@@ -19,9 +9,13 @@ from sklearn.covariance import EmpiricalCovariance, MinCovDet
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.ensemble import IsolationForest
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from src.utils.perfkit import perfclass, PerfMixin
 
 
-class OutlierDetector(BaseEstimator, TransformerMixin):
+@perfclass()
+class OutlierDetector(BaseEstimator, TransformerMixin, PerfMixin):
     """
     Detect & treat outliers in one step (fit/fit_transform), then flag on new data via transform().
 
@@ -101,6 +95,8 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
         # how many values clipped per numeric column
         self.clipped_counts_: Dict[str, int] = {}
 
+        self.best_rules_per_column_: Dict[str, List[str]] = {}
+        self.fences_: Dict[str, Dict[str, Tuple[float, float]]] = {}
         # Reporting
         self.report: Dict[str, Any] = {
             "univariate_outliers": {},    # {column -> {rule_name: count_flagged, ...}, ...}
@@ -123,19 +119,19 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
             "iso_model": self.iso_model,
             "mahal_threshold": self.mahal_threshold,
             "outlier_threshold": self.outlier_threshold,
-            "train_clean_": self.train_clean_,
-            "UNIV_IQR_FACTOR": self.UNIV_IQR_FACTOR,
-            "UNIV_ZSCORE_CUTOFF": self.UNIV_ZSCORE_CUTOFF,
-            "UNIV_MODZ_CUTOFF": self.UNIV_MODZ_CUTOFF,
-            "TUKEY_MULTIPLIER": self.TUKEY_MULTIPLIER,
-            "PCTL_LOW": self.PCTL_LOW,
-            "PCTL_HIGH": self.PCTL_HIGH,
+            "best_rules_per_column_": self.best_rules_per_column_,
+            "fences_": self.fences_,
+            "model_family": self.model_family,
+            "cap_outliers": self.cap_outliers,
+            "robust_covariance": self.robust_covariance,
         }
         with open(filepath, "wb") as f:
             pickle.dump(state, f)
         self._log(f"✔ Model state saved to {filepath}")
 
     def _load_state(self, filepath: str = "outlier_model_state.pkl"):
+        if not Path(filepath).exists():
+            raise RuntimeError("No model fitted. Run `.fit()` first.")
         with open(filepath, "rb") as f:
             state = pickle.load(f)
         self.__dict__.update(state)
@@ -352,13 +348,11 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
                 }
 
         # 3) Attempt LOF if still applicable
-        lof_used = False
         if not mahal_used and (n_samples < self.LOF_MAX_SAMPLES) and (n_features < self.LOF_MAX_FEATURES):
             self._fit_lof(df_num)
             lof_idxs = self._compute_lof_indices(df_num)
             frac_flagged = len(lof_idxs) / float(n_samples)
             if frac_flagged <= 0.05:
-                lof_used = True
                 self.report["multivariate_outliers"] = {
                     "method": "LOF",
                     "indices": lof_idxs,
@@ -395,106 +389,85 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
     # ────────────── Main Fit & Fit_Transform ──────────────
 
     def fit(self, df: pd.DataFrame):
-        """
-        1) Store original df 
-        2) Run all univariate rules, build a per-row votes_table_
-        3) Run detect_multivariate_outliers(), increment votes in votes_table_
-        4) Mark “real_outliers” = rows whose total votes ≥ outlier_threshold
-        5) Depending on cap_outliers / model_family, drop or winsorize those rows
-           – If cap_outliers=None → no removal, simply report them
-           – If model_family in ["linear","bayesian"] and cap_outliers is not False → force winsorize
-           – If cap_outliers=True → winsorize
-           – If cap_outliers=False → drop
-        6) Save cleaned DataFrame as train_clean_
-        7) Build full report, including how many clipped in winsorization
-        """
-        # 1) Store
         self.df = df.copy()
-        numeric_cols = self.find_numeric_columns(df)
-        self.numeric_cols = numeric_cols.copy()
+        self.numeric_cols = self.find_numeric_columns(df)
+        self.best_rules_per_column_ = {}
+        self.fences_ = {}
 
-        # Initialize votes_table_ with zeros
-        votes_df = pd.DataFrame(0, index=self.df.index,
-                                columns=[
-                                    "iqr", "zscore", "modz", "tukey", "percentile",
-                                    "mahalanobis", "lof", "isolation"
-                                ], dtype=int)
+        votes_df = pd.DataFrame(0, index=self.df.index, columns=[
+            "iqr", "zscore", "modz", "tukey", "percentile",
+            "mahalanobis", "lof", "isolation"
+        ], dtype=int)
 
-        # Prepare report structure for univariate counts
-        self.report["univariate_outliers"] = {
-            col: {} for col in self.numeric_cols}
-
-        # 2) UNIVARIATE VOTING
-        for col in self.numeric_cols:
+        def score_rules(col: str):
+            scores = {}
+            fences = {}
             series = self.df[col]
-            col_counts = {}
+
+            def try_rule(rule_name, func, *args):
+                try:
+                    idxs = func(series, *args)
+                    for i in idxs:
+                        votes_df.at[i, rule_name] = 1
+                    scores[rule_name] = len(idxs)
+                    return idxs
+                except Exception:
+                    scores[rule_name] = -1
+                    return []
 
             # IQR
-            try:
-                idxs = self._iqr_outliers(series)
-                col_counts["iqr"] = len(idxs)
-                for i in idxs:
-                    votes_df.at[i, "iqr"] = 1
-                self._log(f"  • {col} via IQR: {len(idxs)} flagged")
-            except Exception:
-                col_counts["iqr"] = None
-                self._log(f"  • {col} via IQR: error")
+            idxs = try_rule("iqr", self._iqr_outliers)
+            if idxs:
+                q1, q3 = np.percentile(series.dropna().values, [25, 75])
+                iqr = q3 - q1
+                fences["iqr"] = (q1 - self.UNIV_IQR_FACTOR
+                                 * iqr, q3 + self.UNIV_IQR_FACTOR * iqr)
 
             # Z-score
-            try:
-                idxs = self._zscore_outliers(series)
-                col_counts["zscore"] = len(idxs)
-                for i in idxs:
-                    votes_df.at[i, "zscore"] = 1
-                self._log(f"  • {col} via Z-score: {len(idxs)} flagged")
-            except Exception:
-                col_counts["zscore"] = None
-                self._log(f"  • {col} via Z-score: error")
+            idxs = try_rule("zscore", self._zscore_outliers)
+            if idxs:
+                mu, sigma = series.mean(), series.std(ddof=0)
+                fences["zscore"] = (mu, sigma)
 
             # Modified Z
-            try:
-                idxs = self._modz_outliers(series)
-                col_counts["modz"] = len(idxs)
-                for i in idxs:
-                    votes_df.at[i, "modz"] = 1
-                self._log(f"  • {col} via Modified Z: {len(idxs)} flagged")
-            except Exception:
-                col_counts["modz"] = None
-                self._log(f"  • {col} via Modified Z: error")
+            idxs = try_rule("modz", self._modz_outliers)
+            if idxs:
+                med = np.median(series.dropna())
+                mad = np.median(np.abs(series.dropna() - med))
+                fences["modz"] = (med, mad)
 
             # Tukey
-            try:
-                idxs = self._tukey_outliers(series)
-                col_counts["tukey"] = len(idxs)
-                for i in idxs:
-                    votes_df.at[i, "tukey"] = 1
-                self._log(f"  • {col} via Tukey (2×IQR): {len(idxs)} flagged")
-            except Exception:
-                col_counts["tukey"] = None
-                self._log(f"  • {col} via Tukey: error")
+            idxs = try_rule("tukey", self._tukey_outliers)
+            if idxs:
+                q1, q3 = np.percentile(series.dropna().values, [25, 75])
+                iqr = q3 - q1
+                fences["tukey"] = (q1 - self.TUKEY_MULTIPLIER
+                                   * iqr, q3 + self.TUKEY_MULTIPLIER * iqr)
 
             # Percentile
-            try:
-                idxs = self._percentile_outliers(series)
-                col_counts["percentile"] = len(idxs)
-                for i in idxs:
-                    votes_df.at[i, "percentile"] = 1
-                self._log(
-                    f"  • {col} via 1st/99th percentile: {len(idxs)} flagged")
-            except Exception:
-                col_counts["percentile"] = None
-                self._log(f"  • {col} via percentile: error")
+            idxs = try_rule("percentile", self._percentile_outliers)
+            if idxs:
+                p1, p99 = np.percentile(series.dropna().values, [
+                                        self.PCTL_LOW, self.PCTL_HIGH])
+                fences["percentile"] = (p1, p99)
 
-            # Save counts
-            self.report["univariate_outliers"][col] = col_counts
+            # Pick best 2 rules (you can limit to 1 if you want stricter)
+            sorted_rules = sorted(
+                [(k, v) for k, v in scores.items() if v >= 0], key=lambda x: -x[1])
+            best = [r[0] for r in sorted_rules[:2]]
+            return col, best, fences
 
-        # 3) MULTIVARIATE VOTING
+        results = self.parallel_map(
+            score_rules, self.numeric_cols, prefer="threads")
+
+        for col, best_rules, fences in results:
+            self.best_rules_per_column_[col] = best_rules
+            self.fences_[col] = fences
+
+        # Multivariate voting
         multi_idxs = self.detect_multivariate_outliers()
         method_used = self.report["multivariate_outliers"].get("method", None)
-        self._log(
-            f"  • Multivariate ({method_used}): {len(multi_idxs)} flagged")
         for i in multi_idxs:
-            # Mark in the correct column
             if method_used == "Mahalanobis":
                 votes_df.at[i, "mahalanobis"] = 1
             elif method_used == "LOF":
@@ -502,77 +475,45 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
             else:
                 votes_df.at[i, "isolation"] = 1
 
-        # 4) REAL OUTLIERS = rows whose sum of votes ≥ outlier_threshold
+        # Real outliers
         votes_df["total_votes"] = votes_df.sum(axis=1)
         real_mask = votes_df["total_votes"] >= self.outlier_threshold
-        real = votes_df.loc[real_mask].index.tolist()
+        real = votes_df.index[real_mask].tolist()
         self.report["real_outliers"] = {"indices": real, "count": len(real)}
-        self._log(f"  → Real outlier count = {len(real)}")
-
-        # Keep the full votes_table_ for future inspection
         self.votes_table_ = votes_df.copy()
 
-        # 5) TREAT OUTLIERS
+        # Treatment
         df_clean = self.df.copy()
-        clipped_counts: Dict[str, int] = {}
+        clipped_counts = {}
 
-        # Decide if we should winsorize or drop (or neither)
-        # If model_family is "linear" or "bayesian" → force winsorize unless cap_outliers=False
-        force_winsorize = (
-            (self.model_family in ["linear", "bayesian"])
-            and (self.cap_outliers is not False)
-        )
+        force_winsorize = (self.model_family in ["linear", "bayesian"]) and (
+            self.cap_outliers is not False)
 
         if self.cap_outliers is None and not force_winsorize:
-            # “detect only” mode: do nothing to df_clean
+            self.train_clean_ = df_clean.copy()
+            self.clipped_counts_ = clipped_counts
+            self.report["treatment"] = {"mode": "detect_only"}
+        elif force_winsorize or self.cap_outliers is True:
+            for col in self.numeric_cols:
+                arr = self.df[col].dropna().values
+                if arr.size == 0:
+                    continue
+                p1, p99 = np.percentile(arr, [self.PCTL_LOW, self.PCTL_HIGH])
+                df_clean[col] = df_clean[col].clip(lower=p1, upper=p99)
+                clipped_counts[col] = int(
+                    (df_clean[col] < p1).sum() + (df_clean[col] > p99).sum())
+
+            self.train_clean_ = df_clean.copy()
+            self.clipped_counts_ = clipped_counts
             self.report["treatment"] = {
-                "mode": "detect_only",
-                "dropped_rows": [],
-                "winsorized_counts": {}
-            }
+                "mode": "winsorize", "counts": clipped_counts}
         else:
-            # If either user specified cap_outliers=True, or model_family forces winsorize:
-            if force_winsorize or (self.cap_outliers is True):
-                # Winsorize: clip each numeric at its 1st/99th percentiles
-                self._log(f"⚠ Winsorizing {len(real)} outlier rows.")
-                for col in self.numeric_cols:
-                    arr_orig = self.df[col].dropna().values
-                    if arr_orig.size == 0:
-                        clipped_counts[col] = 0
-                        continue
+            df_clean.drop(index=real, inplace=True)
+            df_clean.reset_index(drop=True, inplace=True)
+            self.train_clean_ = df_clean.copy()
+            self.clipped_counts_ = clipped_counts
+            self.report["treatment"] = {"mode": "drop", "dropped_rows": real}
 
-                    p1, p99 = np.percentile(
-                        arr_orig, [self.PCTL_LOW, self.PCTL_HIGH])
-                    clipped_series = df_clean[col].clip(lower=p1, upper=p99)
-                    # Count how many values actually changed
-                    n_clipped = int(
-                        (df_clean[col] < p1).sum() + (df_clean[col] > p99).sum())
-                    clipped_counts[col] = n_clipped
-                    df_clean[col] = clipped_series
-
-                self.report["treatment"] = {
-                    "mode": "winsorize",
-                    "dropped_rows": [],
-                    "winsorized_counts": clipped_counts
-                }
-
-            else:
-                # cap_outliers is explicitly False → DROP the rows
-                self._log(f"⚠ Dropping {len(real)} outlier rows.")
-                df_clean.drop(index=real, inplace=True)
-                df_clean.reset_index(drop=True, inplace=True)
-                self.report["treatment"] = {
-                    "mode": "drop",
-                    "dropped_rows": real,
-                    "winsorized_counts": {}
-                }
-
-        # 6) Save cleaned DataFrame + clip counts
-        self.train_clean_ = df_clean.copy()
-        self.clipped_counts_ = clipped_counts
-
-        final_count = len(self.train_clean_)
-        self._log(f"→ After treatment, training set has {final_count} rows.")
         self._save_state("outlier_model_state.pkl")
         return self
 
@@ -580,114 +521,74 @@ class OutlierDetector(BaseEstimator, TransformerMixin):
         """
         Convenience: run fit(...) then return train_clean_.
         """
-        numeric_cols = self.find_numeric_columns(df)
-        return self.fit(df, numeric_cols).train_clean_
+        return self.fit(df).train_clean_
 
     # ────────────── Transform (Flag Only on New Data) ──────────────
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Flag outliers on new data (no dropping or winsorization). Returns a copy
-        of df with an extra boolean column 'is_outlier'. Relies on:
-          – self.train_clean_         (to derive univariate fences)
-          – self.scaler & self.cov_estimator (for Mahalanobis)
-          – self.lof_model & self.iso_model   (if used)
-          – self.mahal_threshold       (χ² cutoff)
-          – self.outlier_threshold     (vote threshold)
-        """
         self._load_state("outlier_model_state.pkl")
         result = df.copy()
         numeric_cols = [col for col in self.numeric_cols if col in df.columns]
         df_num = result[numeric_cols].copy()
-
-        # Initialize votes column
         votes = pd.Series(0, index=result.index, dtype=int)
 
-        # Univariate fences on new data, using training fences
-        def _apply_univ_fence(col: str):
-            if col not in self.train_clean_.columns:
-                return
-
-            arr_train = self.train_clean_[col].dropna().values
-            if arr_train.size == 0:
-                return
-
-            # (a) IQR
-            q1, q3 = np.percentile(arr_train, [25, 75])
-            iqr = q3 - q1
-            lb_iqr, ub_iqr = q1 - self.UNIV_IQR_FACTOR
-            * iqr, q3 + self.UNIV_IQR_FACTOR * iqr
-            mask_iqr = (result[col] < lb_iqr) | (result[col] > ub_iqr)
-            votes.loc[mask_iqr] += 1
-
-            # (b) Z-score
-            mu, sigma = arr_train.mean(), arr_train.std(ddof=0)
-            if sigma != 0 and not np.isnan(sigma):
-                z = (result[col] - mu) / sigma
-                mask_z = z.abs() > self.UNIV_ZSCORE_CUTOFF
-                votes.loc[mask_z] += 1
-
-            # (c) Modified Z-score
-            med = np.median(arr_train)
-            mad = np.median(np.abs(arr_train - med))
-            if mad != 0:
-                modz = 0.6745 * (result[col] - med) / mad
-                mask_modz = modz.abs() > self.UNIV_MODZ_CUTOFF
-                votes.loc[mask_modz] += 1
-
-            # (d) Tukey
-            lb_tukey, ub_tukey = q1 - self.TUKEY_MULTIPLIER
-            * iqr, q3 + self.TUKEY_MULTIPLIER * iqr
-            mask_tukey = (result[col] < lb_tukey) | (result[col] > ub_tukey)
-            votes.loc[mask_tukey] += 1
-
-            # (e) 1st/99th percentile
-            p1, p99 = np.percentile(arr_train, [self.PCTL_LOW, self.PCTL_HIGH])
-            mask_pct = (result[col] < p1) | (result[col] > p99)
-            votes.loc[mask_pct] += 1
-
         for col in numeric_cols:
-            if col in result.columns:
-                _apply_univ_fence(col)
+            if col not in self.best_rules_per_column_:
+                continue
+            rules = self.best_rules_per_column_[col]
+            fences = self.fences_.get(col, {})
+            series = result[col]
 
-        # Multivariate – Mahalanobis
-        if (self.scaler is not None) and (self.cov_estimator is not None):
-            complete_mask = ~df_num.isna().any(axis=1)
-            if complete_mask.any():
+            for rule in rules:
                 try:
-                    Xz_new = self.scaler.transform(
-                        df_num.loc[complete_mask].values)
-                    md_new = self.cov_estimator.mahalanobis(Xz_new)
-                    idxs_mha = df_num.loc[complete_mask].index[md_new
-                                                               > self.mahal_threshold]
-                    votes.loc[idxs_mha] += 1
+                    if rule == "iqr" or rule == "tukey":
+                        lb, ub = fences[rule]
+                        votes.loc[(series < lb) | (series > ub)] += 1
+                    elif rule == "zscore":
+                        mu, sigma = fences[rule]
+                        if sigma != 0:
+                            z = (series - mu) / sigma
+                            votes.loc[z.abs() > self.UNIV_ZSCORE_CUTOFF] += 1
+                    elif rule == "modz":
+                        med, mad = fences[rule]
+                        if mad != 0:
+                            modz = 0.6745 * (series - med) / mad
+                            votes.loc[modz.abs() > self.UNIV_MODZ_CUTOFF] += 1
+                    elif rule == "percentile":
+                        p1, p99 = fences[rule]
+                        votes.loc[(series < p1) | (series > p99)] += 1
+                except Exception:
+                    continue
+
+        # Multivariate
+        if self.scaler and self.cov_estimator:
+            mask = ~df_num.isna().any(axis=1)
+            if mask.any():
+                try:
+                    Xz = self.scaler.transform(df_num.loc[mask].values)
+                    md = self.cov_estimator.mahalanobis(Xz)
+                    votes.loc[df_num.loc[mask].index[md
+                                                     > self.mahal_threshold]] += 1
                 except Exception:
                     pass
 
-        # Multivariate – LOF
-        if self.lof_model is not None:
-            complete_mask = ~df_num.isna().any(axis=1)
-            if complete_mask.any():
+        if self.lof_model:
+            mask = ~df_num.isna().any(axis=1)
+            if mask.any():
                 try:
-                    preds_lof = self.lof_model.predict(
-                        df_num.loc[complete_mask].values)
-                    idxs_lof = df_num.loc[complete_mask].index[preds_lof == -1]
-                    votes.loc[idxs_lof] += 1
+                    preds = self.lof_model.predict(df_num.loc[mask].values)
+                    votes.loc[df_num.loc[mask].index[preds == -1]] += 1
                 except Exception:
                     pass
 
-        # Multivariate – IsolationForest
-        if self.iso_model is not None:
-            complete_mask = ~df_num.isna().any(axis=1)
-            if complete_mask.any():
+        if self.iso_model:
+            mask = ~df_num.isna().any(axis=1)
+            if mask.any():
                 try:
-                    preds_iso = self.iso_model.predict(
-                        df_num.loc[complete_mask].values)
-                    idxs_iso = df_num.loc[complete_mask].index[preds_iso == -1]
-                    votes.loc[idxs_iso] += 1
+                    preds = self.iso_model.predict(df_num.loc[mask].values)
+                    votes.loc[df_num.loc[mask].index[preds == -1]] += 1
                 except Exception:
                     pass
 
-        # Final outlier flag: store internally instead of modifying the df
         self.outlier_flags_ = votes >= self.outlier_threshold
-        return df.copy()  # Return unmodified input
+        return result.copy()

@@ -1,19 +1,22 @@
+from pathlib import Path
 import pandas as pd
 from zenml import step
 from typing import Tuple
 from typing_extensions import Annotated
 from src.Stage_4_Preprocessor.Outlier_Detection import OutlierDetector
 from src.Stage_4_Preprocessor.Missing_Imputer import MissingImputer
+from src.utils.monitor import monitor
 
 DATASET_TARGET_COLUMN_NAME = "label"
 
 
 @step
+@monitor(name="missing_imputer_step", track_memory=True, track_input_size=True)
 def missing_imputer(
     train: pd.DataFrame,
     test: pd.DataFrame,
     val: pd.DataFrame,
-) -> Tuple[Annotated[pd.DataFrame, "train"], Annotated[pd.DataFrame, "test"], Annotated[pd.DataFrame, "test"]]:
+) -> Tuple[Annotated[pd.DataFrame, "train"], Annotated[pd.DataFrame, "test"], Annotated[pd.DataFrame, "Val"]]:
 
     imputer = MissingImputer(
         max_missing_frac_drop=0.8,
@@ -48,7 +51,7 @@ def outlier_imputer(
     train: pd.DataFrame,
     test: pd.DataFrame,
     val: pd.DataFrame,
-) -> Tuple[Annotated[pd.DataFrame, "train"], Annotated[pd.DataFrame, "test"], Annotated[pd.DataFrame, "test"]]:
+) -> Tuple[Annotated[pd.DataFrame, "train"], Annotated[pd.DataFrame, "test"], Annotated[pd.DataFrame, "Val"]]:
 
     detector = OutlierDetector(
         outlier_threshold=3,
@@ -87,15 +90,40 @@ def outlier_imputer(
 
 
 @step
-def data_preprocessor(
-    train: pd.DataFrame,
-    test: pd.DataFrame,
-    val: pd.DataFrame,
-) -> Tuple[Annotated[pd.DataFrame, "train"], Annotated[pd.DataFrame, "test"], Annotated[pd.DataFrame, "test"]]:
-    if not DATASET_TARGET_COLUMN_NAME:
-        raise ValueError(
-            "DATASET_TARGET_COLUMN_NAME must be set to generate a baseline model.")
-    # TODO: create 2 seperate dataframe of threewaysplit for linear and tree based models
-    train, test, val = missing_imputer(train, test, val)
-    train, test, val = outlier_imputer(train, test, val)
-    return train, test, val
+def fit_data_preprocessor_step(
+    train_df: pd.DataFrame
+) -> Tuple[pd.DataFrame, Path, Path]:
+    """Fit on training data: detects outliers, imputes, and saves both models."""
+    # Step 1: Outlier Detection
+    outlier_model = OutlierDetector(verbose=True)
+    # this saves internally to outlier_model_state.pkl
+    cleaned_df = outlier_model.fit_transform(train_df)
+
+    # Step 2: Missing Imputation
+    imputer = MissingImputer()
+    # saves to missing_model_state.pkl
+    imputed_df = imputer.fit_transform(cleaned_df)
+
+    # Return final df and paths for ZenML tracking
+    return imputed_df, Path("outlier_model_state.pkl"), Path("missing_model_state.pkl")
+
+
+@step
+def transform_data_preprocessor_step(
+    input_df: pd.DataFrame,
+    outlier_model_path: Path,
+    missing_model_path: Path
+) -> pd.DataFrame:
+    """Apply saved outlier + imputer models to validation/test data."""
+    # Load OutlierDetector from disk
+    outlier_model = OutlierDetector()
+    # just use existing loader
+    outlier_model._load_state(str(outlier_model_path))
+    df_cleaned = outlier_model.transform(input_df)
+
+    # Load MissingImputer
+    imputer = MissingImputer()
+    imputer._load_state(str(missing_model_path))  # same
+    df_final = imputer.transform(df_cleaned)
+
+    return df_final
